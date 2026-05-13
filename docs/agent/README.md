@@ -339,6 +339,7 @@ message_sent_at: 2026-05-05T17:45:03+08:00
 Work panel 的首个可见进度由 Responses streaming function-call 事件驱动：
 
 - 后端在 `response.output_item.added` / `response.function_call_arguments.done` 阶段识别 `function_call`，并尽早发送 `TOOL_CALL_START`。
+- 如果模型没有立刻发送 reasoning stream 事件，测试前端会在 `RUN_STARTED` 或 `agent.status=requesting_model` 时先显示 `Thinking`，避免首轮空白等待。
 - 当 assistant text item 已结束但 response 仍未完成时，后端发送 `momcozy.agent.thinking` running 事件；测试前端显示 `Preparing next step`，避免文本结束到工具开始之间出现空白等待。
 - 测试前端不会在 `thinking completed` 时移除 Thinking，而是等下一条可见事件或 run 结束替换；收到 text delta 后，如果 run 未结束且 450ms 内没有新 delta，也会显示轻量 `Preparing next step`。这是 UI 体验层 debounce/idle，不改变智能体方案。
 - `TOOL_CALL_START` 到达后，测试前端立即创建或更新 work item。

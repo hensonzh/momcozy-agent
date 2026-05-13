@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -21,6 +24,7 @@ SKILLS_ROOT = ROOT / "skills"
 HOST = "127.0.0.1"
 PORT = 8768
 MAX_IMAGE_ATTACHMENTS = 4
+STREAM_TIMING_ENV = "MOMCOZY_DEBUG_STREAM_TIMING"
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
@@ -173,24 +177,42 @@ class ChatHandler(BaseHTTPRequestHandler):
         pending_assistant_followups: list[str] = []
         text_started = False
         streamed_text_parts: list[str] = []
+        stream_started_at = time.perf_counter()
+        debug_stream_timing = _debug_stream_timing_enabled()
+
+        def log_timing(label: str, metadata: dict[str, Any] | None = None) -> None:
+            if not debug_stream_timing:
+                return
+            elapsed_ms = (time.perf_counter() - stream_started_at) * 1000
+            details = _format_timing_metadata(metadata)
+            print(f"[momcozy.stream] +{elapsed_ms:7.1f}ms {run_id} {label}{details}", file=sys.stderr, flush=True)
+
+        def send_sse_event(event: dict[str, Any]) -> None:
+            log_timing(f"sse:{event.get('type', 'unknown')}", _ag_ui_timing_metadata(event))
+            self._send_sse_event(event)
 
         def send_ag_ui_event(event: dict[str, Any]) -> None:
             nonlocal pending_run_finished
             if event.get("type") == "RUN_FINISHED":
+                log_timing("ag_ui:RUN_FINISHED buffered", _ag_ui_timing_metadata(event))
                 pending_run_finished = event
                 return
             followup = _assistant_followup_from_tool_result_event(event)
             if followup and followup not in pending_assistant_followups:
                 pending_assistant_followups.append(followup)
-            self._send_sse_event(event)
+            send_sse_event(event)
 
         def send_text_delta(delta: str) -> None:
             nonlocal text_started
             if not text_started:
-                self._send_sse_event({"type": "TEXT_MESSAGE_START", "message_id": assistant_message_id, "role": "assistant"})
+                send_sse_event({"type": "TEXT_MESSAGE_START", "message_id": assistant_message_id, "role": "assistant"})
                 text_started = True
             streamed_text_parts.append(delta)
-            self._send_sse_event({"type": "TEXT_MESSAGE_CONTENT", "message_id": assistant_message_id, "delta": delta})
+            send_sse_event({"type": "TEXT_MESSAGE_CONTENT", "message_id": assistant_message_id, "delta": delta})
+
+        response_stream_timing = (
+            lambda event_type, metadata: log_timing(f"responses:{event_type}", metadata)
+        ) if debug_stream_timing else None
 
         try:
             agent_options: dict[str, Any] = {
@@ -208,6 +230,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 ag_ui_run_id=str(run_id),
                 ag_ui_parent_run_id=str(parent_run_id) if parent_run_id else None,
                 on_text_delta=send_text_delta,
+                on_response_stream_event=response_stream_timing,
             )
             response_id = _response_id(response)
             if response_id:
@@ -224,11 +247,11 @@ class ChatHandler(BaseHTTPRequestHandler):
                     send_text_delta(f"\n\n{followup}")
                     current_text = f"{current_text}\n\n{followup}"
             if text_started:
-                self._send_sse_event({"type": "TEXT_MESSAGE_END", "message_id": assistant_message_id})
+                send_sse_event({"type": "TEXT_MESSAGE_END", "message_id": assistant_message_id})
             if pending_run_finished:
-                self._send_sse_event(pending_run_finished)
+                send_sse_event(pending_run_finished)
         except Exception as exc:
-            self._send_sse_event(run_error_event(str(exc), type(exc).__name__))
+            send_sse_event(run_error_event(str(exc), type(exc).__name__))
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -295,6 +318,56 @@ def main() -> None:
     server = ThreadingHTTPServer((HOST, PORT), ChatHandler)
     print(f"Momcozy agent test UI: http://{HOST}:{PORT}")
     server.serve_forever()
+
+
+def _debug_stream_timing_enabled() -> bool:
+    return os.environ.get(STREAM_TIMING_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _format_timing_metadata(metadata: dict[str, Any] | None) -> str:
+    if not metadata:
+        return ""
+    parts = []
+    for key in sorted(metadata):
+        value = metadata[key]
+        if value is None:
+            continue
+        if not isinstance(value, (str, int, float, bool)):
+            continue
+        value_text = str(value).replace("\n", " ")[:120]
+        parts.append(f"{key}={value_text}")
+    return f" {' '.join(parts)}" if parts else ""
+
+
+def _ag_ui_timing_metadata(event: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    event_type = event.get("type")
+    if isinstance(event_type, str):
+        metadata["type"] = event_type
+    if event_type == "TEXT_MESSAGE_CONTENT":
+        delta = event.get("delta")
+        if isinstance(delta, str):
+            metadata["delta_len"] = len(delta)
+    if isinstance(event.get("name"), str):
+        metadata["name"] = event["name"]
+    if isinstance(event.get("tool_call_name"), str):
+        metadata["tool_call_name"] = event["tool_call_name"]
+    if isinstance(event.get("tool_call_id"), str):
+        metadata["tool_call_id"] = event["tool_call_id"]
+    content = event.get("content") if isinstance(event.get("content"), dict) else {}
+    if isinstance(content.get("phase"), str):
+        metadata["phase"] = content["phase"]
+    value = event.get("value") if isinstance(event.get("value"), dict) else {}
+    if isinstance(value.get("phase"), str):
+        metadata["phase"] = value["phase"]
+    if isinstance(value.get("status"), str):
+        metadata["status"] = value["status"]
+    value_metadata = value.get("metadata") if isinstance(value.get("metadata"), dict) else {}
+    if isinstance(value_metadata.get("source_event"), str):
+        metadata["source_event"] = value_metadata["source_event"]
+    if isinstance(value_metadata.get("after_output_text"), bool):
+        metadata["after_output_text"] = value_metadata["after_output_text"]
+    return metadata
 
 
 def _runtime_inputs_from_ag_ui(payload: dict[str, Any]) -> dict[str, Any]:

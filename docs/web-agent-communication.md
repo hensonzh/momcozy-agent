@@ -398,6 +398,7 @@ Thinking 通过 `CUSTOM` 事件返回：
 - `started` / `running`：展示 `Thinking`。
 - 如果 `metadata.after_output_text === true`：展示 `Preparing next step`。
 - 目前前端不会在 completed 时立刻移除 Thinking，而是等下一条可见事件替换，以减少空白延迟感。
+- 如果模型没有立刻发送 reasoning 事件，前端会在 `RUN_STARTED` 或 `agent.status` 进入 `requesting_model` 时先展示 `Thinking` 作为兜底。
 
 ### 5.4 Agent 状态事件
 
@@ -437,7 +438,7 @@ Agent 状态会以两种事件形式发送：
 }
 ```
 
-前端当前主要用它们更新 meta，不作为主要可见工作状态。真正可见的 work panel 主要来自 tool call 事件。
+前端主要用它们更新 meta。`requesting_model` 也会触发首轮 `Thinking` 兜底，真正可见的 work panel 主要来自 tool call 事件。
 
 ### 5.5 Tool call 事件
 
@@ -507,6 +508,16 @@ Agent 状态会以两种事件形式发送：
 - `content` 是 JSON 字符串，需要 `parseJson(event.content)`。
 - 更新 work panel 工具结果状态。
 - 根据 `tool_name` 分发到结构化 UI 渲染器。
+
+### 5.6 Stream Timing 调试
+
+本地测试时可以设置 `MOMCOZY_DEBUG_STREAM_TIMING=1` 启动服务端。后端会在 stderr 输出本轮 run 的关键 Responses stream 事件和 SSE 发送时间，例如首个 `response.output_text.delta`、`response.output_item.done`、`response.completed`、`TEXT_MESSAGE_CONTENT`、`RUN_FINISHED`。
+
+这些日志不包含文本内容或工具参数，只包含事件名、delta 长度和少量 item 元数据。用法：
+
+- 如果 `responses:response.output_text.delta` 本身很晚，慢点主要在 Responses API 首包/模型侧。
+- 如果 `sse:TEXT_MESSAGE_CONTENT` 很早但浏览器很晚才显示，再排查浏览器、代理或本地网络。
+- 如果文本 delta 很早、`response.output_item.done` 后到 `response.completed` 很晚，前端较久显示 `Preparing next step` 是 stream 尾部完成事件较晚，不代表文本没有到达。
 
 ## 6. Tool result 安全响应体
 

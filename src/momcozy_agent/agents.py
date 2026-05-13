@@ -307,6 +307,7 @@ def run_agent_loop(
     ag_ui_run_id: str | None = None,
     ag_ui_parent_run_id: str | None = None,
     on_text_delta: TextDeltaHandler | None = None,
+    on_response_stream_event: Any | None = None,
 ) -> object:
     options = dict(options or {})
     loaded_skill_ids = list(options.get("loaded_skill_ids", []))
@@ -343,6 +344,7 @@ def run_agent_loop(
             on_text_delta,
             lambda status, metadata: _emit_thinking(on_ag_ui_event, status, metadata),
             emit_streamed_tool_start,
+            on_response_stream_event,
         )
     except Exception as exc:
         _emit_event(on_event, "failed", "Model request failed.", _error_metadata(exc), on_ag_ui_event, ag_ui_status_message_id)
@@ -470,6 +472,7 @@ def run_agent_loop(
                 on_text_delta,
                 lambda status, metadata: _emit_thinking(on_ag_ui_event, status, metadata),
                 emit_streamed_tool_start,
+                on_response_stream_event,
             )
         except Exception as exc:
             _emit_event(on_event, "failed", "Model request failed.", _error_metadata(exc, {"round": round_index + 1}), on_ag_ui_event, ag_ui_status_message_id)
@@ -494,6 +497,7 @@ def _create_response(
     on_text_delta: TextDeltaHandler | None = None,
     on_reasoning_event: Any | None = None,
     on_function_call_start: Any | None = None,
+    on_stream_event: Any | None = None,
 ) -> object:
     if on_text_delta is None:
         return client.responses.create(**request)
@@ -503,6 +507,7 @@ def _create_response(
     stream = client.responses.create(**request, stream=True)
     for event in stream:
         event_type = _get_item_value(event, "type")
+        _emit_stream_event(on_stream_event, event_type, event)
         if _is_reasoning_start_event(event_type, event):
             if not reasoning_active:
                 reasoning_active = True
@@ -544,6 +549,35 @@ def _create_response(
     if final_response is None:
         raise RuntimeError("Response stream ended without a completed response.")
     return final_response
+
+
+def _emit_stream_event(handler: Any | None, event_type: Any, event: object) -> None:
+    if handler is None or not isinstance(event_type, str):
+        return
+    handler(event_type, _safe_stream_event_metadata(event_type, event))
+
+
+def _safe_stream_event_metadata(event_type: str, event: object) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    if event_type == "response.output_text.delta":
+        delta = _get_item_value(event, "delta")
+        if isinstance(delta, str):
+            metadata["delta_len"] = len(delta)
+    response = _get_item_value(event, "response")
+    response_id = _get_response_id(response)
+    if response_id:
+        metadata["response_id"] = response_id
+    output_index = _get_item_value(event, "output_index")
+    if isinstance(output_index, int):
+        metadata["output_index"] = output_index
+    item = _get_item_value(event, "item")
+    item_type = _get_item_value(item, "type")
+    if isinstance(item_type, str):
+        metadata["item_type"] = item_type
+    item_id = _get_item_value(item, "id")
+    if isinstance(item_id, str):
+        metadata["item_id"] = item_id
+    return metadata
 
 
 def _emit_thinking(on_ag_ui_event: AgUiEventHandler | None, status: str, metadata: dict[str, Any] | None = None) -> None:

@@ -1770,6 +1770,11 @@ async function streamChat(text, workRun, images = []) {
     return toolNamesByKey.get(workItemKeyForToolCall(event)) || activeToolName || fallback;
   }
 
+  function showInitialThinking() {
+    if (workRun.hasOutput || workRun.hasAction || workRun.finished) return;
+    showThinking(workRun, { title: "Thinking" });
+  }
+
   while (true) {
     const { value, done } = await reader.read();
     buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
@@ -1782,8 +1787,10 @@ async function streamChat(text, workRun, images = []) {
 
       if (event.type === "RUN_STARTED") {
         updateMeta(event);
+        showInitialThinking();
       } else if (event.type === "ACTIVITY_SNAPSHOT") {
         updateMeta(event.content?.metadata || {});
+        if (event.content?.phase === "requesting_model") showInitialThinking();
       } else if (event.type === "CUSTOM" && event.name === THINKING_EVENT_NAME) {
         if (["started", "running"].includes(event.value?.status)) {
           clearTextIdleTimer(workRun);
@@ -1794,6 +1801,7 @@ async function streamChat(text, workRun, images = []) {
         }
       } else if (event.type === "CUSTOM" && event.name === "momcozy.agent.status") {
         updateMeta(event.value?.metadata || {});
+        if (event.value?.phase === "requesting_model") showInitialThinking();
       } else if (event.type === "STEP_STARTED") {
         updateMeta(event.metadata || {});
       } else if (event.type === "STEP_FINISHED") {

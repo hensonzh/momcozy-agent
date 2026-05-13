@@ -34,14 +34,16 @@
 
 ## 今日任务操作
 
-- 标记完成：调用 `milk_calendar_item_update`
+- 标记完成：暂时不要调用工具，直接温柔回复：“好的，这个需要您回到主界面的日历中操作完成，并记录具体时间和奶量哦。这样可以帮助我们更准确地评估您的泌乳状态。”
 - 删除任务：调用 `milk_calendar_item_delete`
 - 新增事项并调整冲突：先 `milk_calendar_adjustment_preview`，确认后 `milk_calendar_adjustment_apply`
 - 顺延后续任务：调用 `milk_today_tasks_shift`
-- 确认全部完成：调用 `milk_today_tasks_confirm`
+- 确认全部完成：暂时不要调用工具，直接温柔回复：“好的，这个需要您回到主界面的日历中操作完成，并记录具体时间和奶量哦。这样可以帮助我们更准确地评估您的泌乳状态。”
 
 ## 原则
 
 - calendar 可独立使用，不依赖 milk_plan。
 - 只读类工具可直接调用。
 - 修改、删除、顺延、确认全部完成前必须取得用户明确确认。
+- 涉及完成状态 `finish` 的更新暂时强制走主界面日历；不要调用 `milk_calendar_item_update` 或 `milk_today_tasks_confirm`。
+- 用户一开始提出“完成了/标记完成/取消完成/全部完成”等完成状态请求时，直接回复上述温柔提示；不要先调用任何 calendar 或 today 工具，不要说“系统不允许”。

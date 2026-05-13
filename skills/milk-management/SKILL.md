@@ -1,51 +1,74 @@
 ---
 name: milk-management
-description: 当用户需要产后哺乳、吸奶、追奶、稳奶、减奶、背奶、奶量计划、今日吸奶/喂养安排、日结复盘或调整母乳管理节奏时使用。普通低风险哺乳科普可直接回答；需要生成计划、基于记录复盘或调整日程时再加载本 skill。
-safety_limits:
-  - 不诊断乳腺炎、感染、宝宝摄入不足或其他医疗问题。
-  - 出现发热、严重乳房疼痛、红肿加重、宝宝脱水迹象、嗜睡或进食差时，优先建议联系医生、儿科医生或 IBCLC。
+description: 用于奶量评估、吸奶/亲喂计划、追奶/稳奶/减奶计划、calendar 日程调整，以及基于用户、宝宝、喂养、吸奶、生长记录的泌乳问答。
 ---
 
-# 母乳管理
+# 奶量管理
 
-这个 skill 用于把哺乳和吸奶问题转化成可执行的计划、复盘或下一步行动。它不是医疗诊断，也不替代医生、儿科医生或 IBCLC 的专业判断。
+本 skill 是奶量管理的总入口。保持回答简洁，先判断用户意图，再进入对应 reference；不要在总入口重复分支细则。不能诊断疾病，也不能保证奶量一定增加、稳定或减少。
 
-当前项目保留了母乳管理服务的流程文档，但与记录、日程和计划写入相关的真实业务工具尚未接入主工具注册表。因此本 skill 主要用于演示服务编排方式：能给出轻量建议、说明需要哪些信息、生成对话式计划草稿，但不能声称已经保存计划、修改日程或读取真实记录。
+## 快速路由
 
-可用参考文件：
+- 创建追奶、稳奶、减奶、离乳或奶量管理计划：读取 `references/milk-plan-creation-flow.md`。
+- 查看今日安排、今日日结、完成率、顺延或确认今日任务：读取 `references/today-summary-flow.md`。
+- 新增、修改、删除会影响吸奶/亲喂安排的事项：读取 `references/calendar-adjustment-flow.md`。
+- 只问奶量状态、趋势、是否够吃：调用 `milk_context_get`，必要时调用 `milk_assessment_evaluate`。
+- 问宝宝身高体重、增长、摄入是否影响喂养：调用 `infant_growth_evaluate`。
+- 问已有计划：调用 `milk_plan_list` 或 `milk_plan_get`。
 
-- `references/milk-plan-creation-flow.md`
-- `references/today-summary-flow.md`
-- `references/calendar-adjustment-flow.md`
+## 通用原则
 
-## 使用边界
+- 优先使用奶量管理专用工具；不要为了奶量计划调用设备工具。
+- 只补问关键缺失信息，不展开长问卷。
+- 已经调用过评估工具时，后续生成计划要通过 `options.prepared_assessment` / `options.prepared_growth_assessment` 复用结果，避免重复评估。
+- 工具已返回 plan draft 时，不要自行重写计划结构；只总结目标、阶段、每日安排、观察点和安全提醒。
+- 只读工具可直接调用；写入、修改、删除、顺延、确认完成前必须获得用户明确确认。
+- 出现发烧、严重乳房疼痛、红肿加重、宝宝脱水迹象、嗜睡或进食差时，暂停普通计划流程，优先建议专业帮助。
 
-- 用户只是问一般哺乳知识、吸奶技巧或低风险问题时，优先直接回答，不要把简单问题变成长流程。
-- 用户需要追奶、稳奶、减奶、背奶或规律化吸奶时，可读取 `milk-plan-creation-flow.md`。
-- 用户想看今日安排、今日完成情况、日结复盘或顺延任务时，可读取 `today-summary-flow.md`，但当前不能读取真实 calendar，只能说明需要应用侧记录接入后才能自动汇总。
-- 用户想调整日程、插入任务或重新排计划时，可读取 `calendar-adjustment-flow.md`，但当前不能实际写入日历。
+## 常用工具
 
-## 回答原则
+只读：
 
-1. 先确认用户最想解决的问题：奶量、疼痛、宝宝摄入、时间安排、复工背奶或设备使用。
-2. 只追问当前下一步必需的信息，不一次性发长问卷。
-3. 对焦虑、内疚、疲惫或挫败情绪，先短句承接，再给 1-2 个可执行下一步。
-4. 不承诺奶量一定增加、稳定或减少。
-5. 对可能涉及乳头/乳房疼痛、堵奶、乳腺炎、宝宝摄入不足的问题，先给安全边界；必要时建议联系医生、儿科医生或 IBCLC。
+- `milk_context_get`
+- `milk_assessment_evaluate`
+- `infant_growth_evaluate`
+- `milk_today_overview_get`
+- `milk_today_summary_get`
+- `milk_calendar_day_get`
+- `milk_plan_list`
+- `milk_plan_get`
 
-## 工具使用
+计划：
 
-- `profile_get`：读取客户端当前会话传入的用户、宝宝和服务状态摘要。
-- 当前没有可用的真实记录查询、计划保存或日程写入工具。不要声称已经读取、保存、更新或删除了用户的真实计划。
-- 如果需要 IBCLC 介入，遵守全局 IBCLC 触发规则：先说明原因并询问用户是否需要在线咨询；用户同意后再创建 IBCLC 咨询卡。
+- `milk_plan_preview`
+- `milk_plan_target_validate`
+- `milk_plan_validate`
+- `milk_plan_apply`
+- `milk_plan_update`
+- `milk_plan_regenerate_preview`
+- `milk_plan_delete`
 
-## 输出方式
+日程：
 
-计划草稿应尽量简短，适合移动端阅读：
+- `milk_calendar_adjustment_preview`
+- `milk_calendar_adjustment_apply`
+- `milk_calendar_item_update`
+- `milk_calendar_item_delete`
+- `milk_today_tasks_shift`
+- `milk_today_tasks_confirm`
 
-- 目标
-- 今天/接下来 24 小时的建议
-- 观察指标
-- 何时需要专业支持
+## 写操作确认
 
-如果信息不足，先问一个最关键的问题；不要用通用模板堆满整屏。
+以下工具必须先获得用户明确确认：
+
+- `milk_plan_apply`
+- `milk_plan_update`
+- `milk_plan_delete`
+- `milk_calendar_adjustment_apply`
+- `milk_calendar_item_update`
+- `milk_calendar_item_delete`
+- `milk_today_tasks_shift`
+- `milk_today_tasks_confirm`
+
+可以视为确认：用户明确说“确认”“可以”“好的”“就这样”“帮我保存/修改/执行”。  
+不能视为确认：用户继续补充条件、询问原因、要求换方案、表达不确定或只是闲聊。
