@@ -77,6 +77,7 @@ class InputImage(TypedDict, total=False):
 
 class RuntimeInputs(TypedDict):
     user_message: str
+    user_id: NotRequired[str]
     locale: str
     timezone: NotRequired[str]
     message_sent_at: NotRequired[str]

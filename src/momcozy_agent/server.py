@@ -312,6 +312,7 @@ def _runtime_inputs_from_ag_ui(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(forwarded_props, dict):
         forwarded_props = {}
 
+    user_id = _string_context_value(payload, state, forwarded_props, "user_id", "userId")
     timezone = forwarded_props.get("timezone") or state.get("timezone") or payload.get("timezone") or DEFAULT_TIMEZONE
     message_sent_at = (
         forwarded_props.get("message_sent_at")
@@ -326,14 +327,23 @@ def _runtime_inputs_from_ag_ui(payload: dict[str, Any]) -> dict[str, Any]:
         "timezone": timezone,
         "message_sent_at": message_sent_at,
     }
+    if user_id:
+        inputs["user_id"] = user_id
     if images:
         inputs["images"] = images
 
-    for key in ("user_profile", "baby_profile", "service_state", "retrieved_records", "retrieved_knowledge"):
-        if key in state:
-            inputs[key] = state[key]
-        elif key in forwarded_props:
-            inputs[key] = forwarded_props[key]
+    user_profile = _context_value(state, forwarded_props, "user_profile")
+    if isinstance(user_profile, dict):
+        inputs["user_profile"] = dict(user_profile)
+    elif user_id:
+        inputs["user_profile"] = {"user_id": user_id}
+    if user_id and isinstance(inputs.get("user_profile"), dict):
+        inputs["user_profile"].setdefault("user_id", user_id)
+
+    for key in ("baby_profile", "service_state", "retrieved_records", "retrieved_knowledge"):
+        value = _context_value(state, forwarded_props, key)
+        if value is not None:
+            inputs[key] = value
 
     previous_response_id = forwarded_props.get("previous_response_id") or state.get("previous_response_id")
     if previous_response_id:
@@ -379,8 +389,8 @@ def _format_client_event(payload: dict[str, Any]) -> str:
     occurred_at = str(payload.get("occurred_at") or payload.get("message_sent_at") or "").strip()
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     detail_parts = []
-    for key in ("consultant_name", "consultant_credentials", "source", "consult_id"):
-        value = metadata.get(key)
+    for key in ("user_id", "consultant_name", "consultant_credentials", "source", "consult_id"):
+        value = metadata.get(key) or payload.get(key)
         if value:
             detail_parts.append(f"{key}: {value}")
     details = f" ({'; '.join(detail_parts)})" if detail_parts else ""
@@ -484,6 +494,29 @@ def _field(payload: dict[str, Any], snake_case: str, camel_case: str) -> Any:
     if snake_case in payload:
         return payload[snake_case]
     return payload.get(camel_case)
+
+
+def _context_value(state: dict[str, Any], forwarded_props: dict[str, Any], key: str) -> Any:
+    if key in state:
+        return state[key]
+    if key in forwarded_props:
+        return forwarded_props[key]
+    return None
+
+
+def _string_context_value(
+    payload: dict[str, Any],
+    state: dict[str, Any],
+    forwarded_props: dict[str, Any],
+    snake_case: str,
+    camel_case: str,
+) -> str:
+    value = (
+        _field(forwarded_props, snake_case, camel_case)
+        or _field(state, snake_case, camel_case)
+        or _field(payload, snake_case, camel_case)
+    )
+    return str(value or "").strip()
 
 
 def _response_text(response: Any) -> str:

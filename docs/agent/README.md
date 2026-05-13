@@ -102,7 +102,7 @@ web/app.js
 - `loaded_skill_ids`
 - `context_state`
 
-前端只需要传当前用户消息和稳定 `threadId`，不负责维护完整上下文。
+前端需要传当前用户消息、稳定 `threadId`、客户端用户 id、locale、timezone 和本条消息发送时间；后端负责维护完整多轮上下文、`previous_response_id`、已加载 skill 和运行态。
 
 ## Agent 设计
 

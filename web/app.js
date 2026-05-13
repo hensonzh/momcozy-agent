@@ -13,6 +13,7 @@ const THINKING_EVENT_NAME = "momcozy.agent.thinking";
 const TEXT_IDLE_THINKING_DELAY_MS = 450;
 const MAX_IMAGE_ATTACHMENTS = 4;
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+const CLIENT_USER_ID_KEY = "momcozy_user_id";
 const IMAGE_VIEWER_MIN_ZOOM = 1;
 const IMAGE_VIEWER_MAX_ZOOM = 3;
 const IMAGE_VIEWER_ZOOM_STEP = 0.25;
@@ -27,9 +28,18 @@ const DOWNLOAD_ICON_SVG = `
 `;
 
 let conversationId = localStorage.getItem("momcozy_conversation_id") || "";
+let clientUserId = getOrCreateClientUserId();
 let runCount = Number(localStorage.getItem("momcozy_run_count") || "0");
 let pendingImages = [];
 let imageViewer = null;
+
+function getOrCreateClientUserId() {
+  const existing = localStorage.getItem(CLIENT_USER_ID_KEY);
+  if (existing) return existing;
+  const generated = `user_${crypto.randomUUID()}`;
+  localStorage.setItem(CLIENT_USER_ID_KEY, generated);
+  return generated;
+}
 
 function addMessage(role, text, options = {}) {
   const row = addMessageRow(role);
@@ -762,13 +772,18 @@ function normalizeSupportTicketValues(values) {
 }
 
 async function submitSupportTicket(ticket) {
+  const timezone = clientTimezone();
+  const messageSentAt = clientMessageSentAt();
   const response = await fetch("/api/support-ticket-submit", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ticket,
-      locale: navigator.language || "en-US",
-      message_sent_at: new Date().toISOString(),
+      thread_id: conversationId,
+      user_id: clientUserId,
+      locale: clientLocale(),
+      timezone,
+      message_sent_at: messageSentAt,
       idempotency_key: crypto.randomUUID(),
     }),
   });
@@ -1612,12 +1627,39 @@ function clearPendingImages() {
   if (imageInput) imageInput.value = "";
 }
 
+function clientLocale() {
+  return navigator.language || "en-US";
+}
+
+function clientTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Los_Angeles";
+}
+
+function clientMessageSentAt(date = new Date()) {
+  const pad = (value, length = 2) => String(Math.trunc(Math.abs(value))).padStart(length, "0");
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const offsetHours = Math.floor(Math.abs(offsetMinutes) / 60);
+  const offsetRemainder = Math.abs(offsetMinutes) % 60;
+  return [
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    "T",
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`,
+    ".",
+    pad(date.getMilliseconds(), 3),
+    `${sign}${pad(offsetHours)}:${pad(offsetRemainder)}`,
+  ].join("");
+}
+
 function buildAgUiPayload(text, images = []) {
   const threadId = conversationId || `thread_${crypto.randomUUID()}`;
   conversationId = threadId;
   localStorage.setItem("momcozy_conversation_id", conversationId);
   runCount += 1;
   localStorage.setItem("momcozy_run_count", String(runCount));
+  const locale = clientLocale();
+  const timezone = clientTimezone();
+  const messageSentAt = clientMessageSentAt();
   const content = images.length
     ? [
         ...(text ? [{ type: "text", text }] : []),
@@ -1634,9 +1676,17 @@ function buildAgUiPayload(text, images = []) {
 
   return {
     threadId,
+    userId: clientUserId,
     runId: `run_${Date.now()}_${runCount}`,
     state: {
-      locale: navigator.language || "en-US",
+      user_id: clientUserId,
+      locale,
+      timezone,
+      message_sent_at: messageSentAt,
+      user_profile: {
+        user_id: clientUserId,
+        language: locale,
+      },
     },
     messages: [
       {
@@ -1647,7 +1697,12 @@ function buildAgUiPayload(text, images = []) {
     ],
     tools: [],
     context: [],
-    forwardedProps: {},
+    forwardedProps: {
+      user_id: clientUserId,
+      locale,
+      timezone,
+      message_sent_at: messageSentAt,
+    },
   };
 }
 

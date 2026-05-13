@@ -60,7 +60,13 @@ def main() -> None:
     image_data_url = "data:image/png;base64,iVBORw0KGgo="
     image_payload = {
         "threadId": "thread_image_test",
-        "state": {"locale": "zh-CN", "timezone": "America/Los_Angeles", "message_sent_at": "2026-05-04T09:00:00-07:00"},
+        "userId": "user_demo",
+        "state": {
+            "user_id": "user_demo",
+            "locale": "zh-CN",
+            "timezone": "America/Los_Angeles",
+            "message_sent_at": "2026-05-04T09:00:00-07:00",
+        },
         "messages": [
             {
                 "role": "user",
@@ -72,6 +78,8 @@ def main() -> None:
         ],
     }
     image_inputs = _runtime_inputs_from_ag_ui(image_payload)
+    assert image_inputs["user_id"] == "user_demo"
+    assert image_inputs["user_profile"]["user_id"] == "user_demo"
     assert image_inputs["user_message"] == "帮我看看这个吸奶器配件怎么装"
     assert image_inputs["images"][0]["image_url"] == image_data_url
     image_request = build_agent_request(image_inputs)

@@ -4,10 +4,6 @@ from typing import Any
 
 from .types import FunctionToolDefinition, ToolName
 
-USER_ID = {"type": "string", "description": "应用侧用户 ID。"}
-BABY_ID = {"type": "string", "description": "已知时填写宝宝档案 ID。"}
-ISO_DATE = {"type": "string", "description": "ISO-8601 日期或日期时间。"}
-
 # JSON_OBJECT_STRING is intentionally a string-typed field, used only for
 # free-form structured payloads where defining a complete nested schema is
 # impractical (for example arbitrary record events, profile patches, or
@@ -178,13 +174,13 @@ FUNCTION_TOOLS: dict[ToolName, FunctionToolDefinition] = {
     ),
     "profile_get": _function_tool(
         "profile_get",
-        "读取用户和宝宝档案摘要。无副作用。",
-        {"user_id": USER_ID},
+        "读取客户端当前会话传入的用户、宝宝和服务状态摘要。无副作用。不需要模型提供用户 ID。",
+        {},
     ),
     "handoff_summary_generate": _function_tool(
         "handoff_summary_generate",
         "生成简洁的专业转接摘要。无副作用。",
-        {"user_id": USER_ID, "issue_type": {"type": "string"}, "facts": JSON_OBJECT_STRING},
+        {"issue_type": {"type": "string"}, "facts": JSON_OBJECT_STRING},
     ),
     "device_manual_search": _function_tool(
         "device_manual_search",

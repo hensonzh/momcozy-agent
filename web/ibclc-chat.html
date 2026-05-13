@@ -281,6 +281,7 @@
         new URLSearchParams(window.location.search).get("thread_id") ||
         localStorage.getItem("momcozy_conversation_id") ||
         "";
+      const clientUserId = localStorage.getItem("momcozy_user_id") || "";
       const consultId = new URLSearchParams(window.location.search).get("consult_id") || "";
       const consultCompletedStorageKey = "momcozy_ibclc_consult_completed";
       const steps = [
@@ -311,10 +312,14 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               thread_id: conversationId,
+              user_id: clientUserId,
               event_type: "ibclc_consult_completed",
               label: "用户已完成一次 IBCLC 在线咨询",
-              occurred_at: new Date().toISOString(),
+              occurred_at: clientMessageSentAt(),
+              locale: navigator.language || "en-US",
+              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Los_Angeles",
               metadata: {
+                user_id: clientUserId,
                 consultant_name: "Emily Chen",
                 consultant_credentials: "IBCLC",
                 source: "ibclc-chat",
@@ -336,7 +341,7 @@
           conversation_id: result?.conversation_id || conversationId,
           consult_id: result?.consult_id || consultId,
           event_type: "ibclc_consult_completed",
-          completed_at: new Date().toISOString(),
+          completed_at: clientMessageSentAt(),
           event: result?.event || "",
           session_state: result?.session_state || null,
         };
@@ -356,6 +361,22 @@
           return;
         }
         window.location.href = "/";
+      }
+
+      function clientMessageSentAt(date = new Date()) {
+        const pad = (value, length = 2) => String(Math.trunc(Math.abs(value))).padStart(length, "0");
+        const offsetMinutes = -date.getTimezoneOffset();
+        const sign = offsetMinutes >= 0 ? "+" : "-";
+        const offsetHours = Math.floor(Math.abs(offsetMinutes) / 60);
+        const offsetRemainder = Math.abs(offsetMinutes) % 60;
+        return [
+          `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+          "T",
+          `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`,
+          ".",
+          pad(date.getMilliseconds(), 3),
+          `${sign}${pad(offsetHours)}:${pad(offsetRemainder)}`,
+        ].join("");
       }
 
       let elapsed = 0;
