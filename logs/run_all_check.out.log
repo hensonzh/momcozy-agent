@@ -1,0 +1,4 @@
+Momcozy agent test UI: http://127.0.0.1:8768
+Momcozy unified API: http://0.0.0.0:8769
+Momcozy chat SSE upstream: http://127.0.0.1:8768/api/ag-ui
+INFO:     127.0.0.1:60736 - "GET /v1/pump/energy/get?user_id=test-user HTTP/1.1" 200 OK

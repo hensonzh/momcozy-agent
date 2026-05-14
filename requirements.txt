@@ -1,0 +1,6 @@
+fastapi
+httpx
+openai
+python-multipart
+uvicorn
+websockets

@@ -7,9 +7,11 @@ dependencies = []
 
 [project.optional-dependencies]
 api = ["openai"]
+server = ["fastapi", "uvicorn", "python-multipart", "openai", "httpx", "websockets"]
 
 [project.scripts]
 momcozy-chat-ui = "momcozy_agent.server:main"
+momcozy-api = "momcozy_agent.api_app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
