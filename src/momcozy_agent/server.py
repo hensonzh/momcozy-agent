@@ -88,10 +88,6 @@ def create_app(runtime: ChatRuntime | None = None, *, include_websocket_bridge: 
     app.state.runtime = runtime
     app.state.runtime_lock = threading.Lock()
 
-    @app.get("/healthz")
-    async def healthz() -> dict[str, str]:
-        return {"status": "ok", "service": "momcozy-agent"}
-
     @app.post("/api/ag-ui")
     async def ag_ui_stream(request: Request) -> Any:
         try:
