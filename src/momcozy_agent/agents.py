@@ -120,6 +120,7 @@ def tool_call_args_event(
         "type": "TOOL_CALL_ARGS",
         "timestamp": _timestamp_ms(),
         "tool_call_id": tool_call_id,
+        "tool_call_name": tool_name,
         "delta": json.dumps(safe_tool_arguments(tool_name, arguments), ensure_ascii=False),
     }
     if response_id:
@@ -133,6 +134,7 @@ def tool_call_args_event(
 
 def tool_call_end_event(
     tool_call_id: str,
+    tool_name: str,
     *,
     response_id: str | None = None,
     output_index: int | None = None,
@@ -142,6 +144,7 @@ def tool_call_end_event(
         "type": "TOOL_CALL_END",
         "timestamp": _timestamp_ms(),
         "tool_call_id": tool_call_id,
+        "tool_call_name": tool_name,
     }
     if response_id:
         event["response_id"] = response_id
@@ -155,6 +158,7 @@ def tool_call_end_event(
 def tool_call_result_event(
     message_id: str,
     tool_call_id: str,
+    tool_call_name: str,
     result: dict[str, Any],
     *,
     response_id: str | None = None,
@@ -166,6 +170,7 @@ def tool_call_result_event(
         "timestamp": _timestamp_ms(),
         "message_id": message_id,
         "tool_call_id": tool_call_id,
+        "tool_call_name": tool_call_name,
         "content": json.dumps(safe_tool_result(result), ensure_ascii=False),
         "role": "tool",
     }
@@ -396,6 +401,7 @@ def run_agent_loop(
                 on_ag_ui_event,
                 tool_call_end_event(
                     tool_call["call_id"],
+                    tool_name,
                     response_id=tool_call.get("response_id"),
                     output_index=tool_call.get("output_index"),
                     item_id=tool_call.get("item_id"),
@@ -428,6 +434,7 @@ def run_agent_loop(
                 tool_call_result_event(
                     ag_ui_tool_result_message_id,
                     tool_call["call_id"],
+                    tool_call["name"],
                     result,
                     response_id=tool_call.get("response_id"),
                     output_index=tool_call.get("output_index"),

@@ -1,4 +1,5 @@
 const messages = document.querySelector("#messages");
+window.MOMCOZY_APP_BUILD_ID = "tool-status-20260514";
 const form = document.querySelector("#composer");
 const input = document.querySelector("#message");
 const send = document.querySelector("#send");
@@ -358,7 +359,7 @@ function addWorkToolStart(run, event) {
   run.hasAction = true;
   completeThinking(run);
   const workPanel = ensureWorkPanel(run);
-  const toolName = event.tool_call_name || "tool";
+  const toolName = normalizeToolName(event.tool_call_name || "tool");
   const copy = toolStartCopy(toolName);
   upsertWorkItem(workPanel, {
     key: workItemKeyForToolCall(event),
@@ -374,11 +375,12 @@ function addWorkToolArgs(run, event, toolName) {
   run.hasAction = true;
   completeThinking(run);
   const workPanel = ensureWorkPanel(run);
-  const copy = toolArgsCopy(toolName || "tool");
+  const normalizedToolName = normalizeToolName(toolName || event.tool_call_name || "tool");
+  const copy = toolArgsCopy(normalizedToolName);
   upsertWorkItem(workPanel, {
     key: workItemKeyForToolCall(event),
     aliases: workItemKeysForToolCall(event),
-    toolName,
+    toolName: normalizedToolName,
     status: "running",
     title: copy.title,
     detail: copy.detail,
@@ -391,11 +393,12 @@ function addWorkToolEnd(run, event, toolName) {
   run.hasAction = true;
   completeThinking(run);
   const workPanel = ensureWorkPanel(run);
-  const copy = toolEndCopy(toolName || "tool");
+  const normalizedToolName = normalizeToolName(toolName || event.tool_call_name || "tool");
+  const copy = toolEndCopy(normalizedToolName);
   upsertWorkItem(workPanel, {
     key: workItemKeyForToolCall(event),
     aliases: workItemKeysForToolCall(event),
-    toolName,
+    toolName: normalizedToolName,
     status: "running",
     title: copy.title,
     detail: copy.detail,
@@ -408,11 +411,12 @@ function addWorkToolResult(run, event, result, toolName) {
   run.hasAction = true;
   completeThinking(run);
   const workPanel = ensureWorkPanel(run);
-  const copy = toolResultCopy(toolName || result?.tool_name || "tool", result || {});
+  const normalizedToolName = normalizeToolName(toolName || result?.tool_name || event.tool_call_name || "tool");
+  const copy = toolResultCopy(normalizedToolName, result || {});
   upsertWorkItem(workPanel, {
     key: workItemKeyForToolCall(event),
     aliases: workItemKeysForToolCall(event),
-    toolName,
+    toolName: normalizedToolName,
     status: result?.ok === false ? "failed" : "completed",
     title: copy.title,
     detail: copy.detail,
@@ -1736,6 +1740,7 @@ async function streamChat(text, workRun, images = []) {
   }
 
   function rememberToolName(event, toolName) {
+    toolName = normalizeToolName(toolName);
     if (!toolName) return;
     for (const key of workItemKeysForToolCall(event)) {
       toolNamesByKey.set(key, toolName);
@@ -1743,7 +1748,7 @@ async function streamChat(text, workRun, images = []) {
   }
 
   function toolNameForEvent(event, fallback = "tool") {
-    return toolNamesByKey.get(workItemKeyForToolCall(event)) || activeToolName || fallback;
+    return normalizeToolName(event.tool_call_name || toolNamesByKey.get(workItemKeyForToolCall(event)) || activeToolName || fallback);
   }
 
   while (true) {
@@ -1776,7 +1781,7 @@ async function streamChat(text, workRun, images = []) {
       } else if (event.type === "STEP_FINISHED") {
         updateMeta(event.metadata || {});
       } else if (event.type === "TOOL_CALL_START") {
-        activeToolName = event.tool_call_name || "";
+        activeToolName = normalizeToolName(event.tool_call_name || "");
         if (activeToolName) usedTools.add(activeToolName);
         rememberToolName(event, activeToolName);
         moveProvisionalTextToWorkPanel();
@@ -1793,7 +1798,7 @@ async function streamChat(text, workRun, images = []) {
         addWorkToolEnd(workRun, event, toolName);
       } else if (event.type === "TOOL_CALL_RESULT") {
         const result = parseJson(event.content) || {};
-        const toolName = result.tool_name || toolNameForEvent(event);
+        const toolName = normalizeToolName(result.tool_name || event.tool_call_name || toolNameForEvent(event));
         usedTools.add(toolName);
         rememberToolName(event, toolName);
         moveProvisionalTextToWorkPanel();
@@ -1911,10 +1916,14 @@ function labelForStep(stepName, state) {
 }
 
 function labelForTool(toolName) {
+  toolName = normalizeToolName(toolName);
   const labels = {
+    tool_search: "tool catalog",
+    tool_search_call: "tool catalog",
     risk_evaluate: "safety check",
     profile_get: "profile lookup",
     memory_search: "memory search",
+    list_skills: "service workflow list",
     ui_form_create: "form",
     ui_card_create: "card",
     ibclc_consult_card_create: "IBCLC consult card",
@@ -1924,6 +1933,20 @@ function labelForTool(toolName) {
     search_skill_assets: "skill asset search",
     run_approved_skill_script: "approved script",
     support_ticket_draft_create: "support ticket draft",
+    milk_snapshot_get: "milk context",
+    milk_status_query: "milk status",
+    milk_records_query: "milk records",
+    milk_record_mutate: "milk record update",
+    milk_plan_query: "milk plan",
+    milk_plan_preview: "milk plan draft",
+    milk_plan_mutate: "milk plan update",
+    milk_calendar_query: "milk schedule",
+    milk_calendar_change_preview: "schedule change preview",
+    milk_calendar_mutate: "schedule update",
+    milk_task_complete: "task completion",
+    milk_assessment_evaluate: "milk assessment",
+    infant_growth_evaluate: "growth assessment",
+    infant_growth_mutate: "growth record update",
     reminder_list: "reminder lookup",
     reminder_create: "reminder creation",
     reminder_update: "reminder update",
@@ -1933,13 +1956,35 @@ function labelForTool(toolName) {
   return labels[toolName] || toolName.replaceAll("_", " ");
 }
 
+function normalizeToolName(toolName) {
+  const token = String(toolName || "").trim();
+  if (!token) return "";
+  return token.split(".").pop().replace(/^milk_management__/, "");
+}
+
 function toolStartCopy(toolName) {
+  toolName = normalizeToolName(toolName);
   const copies = {
+    tool_search: {
+      title: "Finding service tools",
+    },
+    tool_search_call: {
+      title: "Finding service tools",
+    },
+    list_skills: {
+      title: "Reading service workflows",
+    },
     load_skill: {
       title: "Loading service workflow",
     },
     read_skill_file: {
       title: "Reading service reference",
+    },
+    search_skill_assets: {
+      title: "Searching service references",
+    },
+    run_approved_skill_script: {
+      title: "Running approved service script",
     },
     ui_form_create: {
       title: "Preparing form",
@@ -1959,6 +2004,48 @@ function toolStartCopy(toolName) {
     profile_get: {
       title: "Checking profile context",
     },
+    milk_snapshot_get: {
+      title: "Checking milk context",
+    },
+    milk_status_query: {
+      title: "Loading milk status",
+    },
+    milk_records_query: {
+      title: "Reading milk records",
+    },
+    milk_plan_query: {
+      title: "Reading saved milk plan",
+    },
+    milk_calendar_query: {
+      title: "Reading milk schedule",
+    },
+    milk_assessment_evaluate: {
+      title: "Evaluating milk status",
+    },
+    infant_growth_evaluate: {
+      title: "Evaluating growth data",
+    },
+    milk_plan_preview: {
+      title: "Drafting milk plan",
+    },
+    milk_calendar_change_preview: {
+      title: "Previewing schedule change",
+    },
+    milk_record_mutate: {
+      title: "Preparing record update",
+    },
+    milk_plan_mutate: {
+      title: "Preparing plan update",
+    },
+    milk_calendar_mutate: {
+      title: "Preparing schedule update",
+    },
+    milk_task_complete: {
+      title: "Updating task status",
+    },
+    infant_growth_mutate: {
+      title: "Preparing growth record update",
+    },
   };
   return copies[toolName] || {
     title: `Using ${labelForTool(toolName)}`,
@@ -1966,7 +2053,20 @@ function toolStartCopy(toolName) {
 }
 
 function toolArgsCopy(toolName) {
+  toolName = normalizeToolName(toolName);
   const copies = {
+    tool_search: {
+      title: "Service tool search ready",
+      detail: "The agent is selecting the tools needed for this request.",
+    },
+    tool_search_call: {
+      title: "Service tool search ready",
+      detail: "The agent is selecting the tools needed for this request.",
+    },
+    list_skills: {
+      title: "Service workflow list ready",
+      detail: "The available service workflows are ready to read.",
+    },
     load_skill: {
       title: "Service workflow selected",
       detail: "The required workflow is ready to load.",
@@ -1974,6 +2074,18 @@ function toolArgsCopy(toolName) {
     read_skill_file: {
       title: "Reference selected",
       detail: "The approved reference is ready to read.",
+    },
+    search_skill_assets: {
+      title: "Reference search ready",
+      detail: "The agent is searching approved service reference files.",
+    },
+    run_approved_skill_script: {
+      title: "Script inputs ready",
+      detail: "The agent is running an approved service script.",
+    },
+    profile_get: {
+      title: "Profile request ready",
+      detail: "The agent is reading profile context.",
     },
     ui_form_create: {
       title: "Form requirements ready",
@@ -1995,6 +2107,62 @@ function toolArgsCopy(toolName) {
       title: "Support ticket details ready",
       detail: "The issue details are ready for confirmation.",
     },
+    milk_snapshot_get: {
+      title: "Milk context request ready",
+      detail: "The agent is reading profile and milk-management context.",
+    },
+    milk_status_query: {
+      title: "Milk status request ready",
+      detail: "The agent is reading today's status, trends, growth data, or tasks.",
+    },
+    milk_records_query: {
+      title: "Milk records request ready",
+      detail: "The agent is reading the selected pumping and feeding window.",
+    },
+    milk_plan_query: {
+      title: "Milk plan request ready",
+      detail: "The agent is reading saved plan details.",
+    },
+    milk_calendar_query: {
+      title: "Schedule request ready",
+      detail: "The agent is reading the selected plan schedule.",
+    },
+    milk_assessment_evaluate: {
+      title: "Assessment inputs ready",
+      detail: "The agent is checking records against milk-management rules.",
+    },
+    infant_growth_evaluate: {
+      title: "Growth assessment inputs ready",
+      detail: "The agent is checking growth records against reference rules.",
+    },
+    milk_plan_preview: {
+      title: "Plan draft inputs ready",
+      detail: "The agent is generating a preview without saving it.",
+    },
+    milk_calendar_change_preview: {
+      title: "Schedule change inputs ready",
+      detail: "The agent is previewing conflicts and proposed adjustments.",
+    },
+    milk_record_mutate: {
+      title: "Record update confirmed",
+      detail: "The agent is applying the confirmed milk record change.",
+    },
+    milk_plan_mutate: {
+      title: "Plan update confirmed",
+      detail: "The agent is applying the confirmed plan change.",
+    },
+    milk_calendar_mutate: {
+      title: "Schedule update confirmed",
+      detail: "The agent is applying the confirmed schedule change.",
+    },
+    milk_task_complete: {
+      title: "Task status update confirmed",
+      detail: "The agent is applying the confirmed task status change.",
+    },
+    infant_growth_mutate: {
+      title: "Growth record update confirmed",
+      detail: "The agent is applying the confirmed growth record change.",
+    },
   };
   return copies[toolName] || {
     title: `${labelForTool(toolName)} parameters ready`,
@@ -2002,12 +2170,31 @@ function toolArgsCopy(toolName) {
 }
 
 function toolEndCopy(toolName) {
+  toolName = normalizeToolName(toolName);
   const copies = {
+    tool_search: {
+      title: "Searching service tools",
+    },
+    tool_search_call: {
+      title: "Searching service tools",
+    },
+    list_skills: {
+      title: "Reading service workflows",
+    },
     load_skill: {
       title: "Loading service workflow",
     },
     read_skill_file: {
       title: "Reading service reference",
+    },
+    search_skill_assets: {
+      title: "Searching service references",
+    },
+    run_approved_skill_script: {
+      title: "Running approved service script",
+    },
+    profile_get: {
+      title: "Reading profile context",
     },
     ui_form_create: {
       title: "Generating form",
@@ -2024,6 +2211,48 @@ function toolEndCopy(toolName) {
     support_ticket_draft_create: {
       title: "Preparing support ticket",
     },
+    milk_snapshot_get: {
+      title: "Reading milk context",
+    },
+    milk_status_query: {
+      title: "Reading milk status",
+    },
+    milk_records_query: {
+      title: "Reading milk records",
+    },
+    milk_plan_query: {
+      title: "Reading milk plan",
+    },
+    milk_calendar_query: {
+      title: "Reading milk schedule",
+    },
+    milk_assessment_evaluate: {
+      title: "Running milk assessment",
+    },
+    infant_growth_evaluate: {
+      title: "Running growth assessment",
+    },
+    milk_plan_preview: {
+      title: "Generating plan preview",
+    },
+    milk_calendar_change_preview: {
+      title: "Generating schedule preview",
+    },
+    milk_record_mutate: {
+      title: "Saving milk record change",
+    },
+    milk_plan_mutate: {
+      title: "Saving milk plan change",
+    },
+    milk_calendar_mutate: {
+      title: "Saving schedule change",
+    },
+    milk_task_complete: {
+      title: "Saving task status",
+    },
+    infant_growth_mutate: {
+      title: "Saving growth record",
+    },
   };
   return copies[toolName] || {
     title: `Running ${labelForTool(toolName)}`,
@@ -2031,15 +2260,31 @@ function toolEndCopy(toolName) {
 }
 
 function toolResultCopy(toolName, result) {
+  toolName = normalizeToolName(toolName);
   const errorMessage = result?.error?.message || "The tool did not complete successfully.";
   if (result?.ok === false) {
-    return { title: "Tool failed", detail: errorMessage };
+    return { title: `${capitalizeLabel(labelForTool(toolName))} failed`, detail: errorMessage };
+  }
+  if (toolName === "tool_search" || toolName === "tool_search_call") {
+    return { title: "Service tools found" };
+  }
+  if (toolName === "list_skills") {
+    return { title: "Service workflows loaded" };
   }
   if (toolName === "load_skill") {
     return { title: "Service workflow loaded" };
   }
   if (toolName === "read_skill_file") {
     return { title: "Reference loaded" };
+  }
+  if (toolName === "search_skill_assets") {
+    return { title: "Service references found" };
+  }
+  if (toolName === "run_approved_skill_script") {
+    return { title: "Service script completed" };
+  }
+  if (toolName === "profile_get") {
+    return { title: "Profile context loaded" };
   }
   if (toolName === "ui_form_create") {
     return { title: "Form ready" };
@@ -2059,7 +2304,84 @@ function toolResultCopy(toolName, result) {
   if (toolName === "support_ticket_draft_create") {
     return { title: "Support ticket ready" };
   }
-  return { title: "Tool completed" };
+  if (toolName === "milk_snapshot_get") {
+    return { title: "Milk context loaded" };
+  }
+  if (toolName === "milk_status_query") {
+    return { title: "Milk status loaded" };
+  }
+  if (toolName === "milk_records_query") {
+    return { title: "Milk records loaded" };
+  }
+  if (toolName === "milk_plan_query") {
+    return { title: "Milk plan loaded" };
+  }
+  if (toolName === "milk_calendar_query") {
+    return { title: "Milk schedule loaded" };
+  }
+  if (toolName === "milk_assessment_evaluate") {
+    return { title: "Milk assessment ready" };
+  }
+  if (toolName === "infant_growth_evaluate") {
+    return { title: "Growth assessment ready" };
+  }
+  if (toolName === "milk_plan_preview") {
+    if (result?.status === "plan_preview_needs_revision") {
+      return { title: "Milk plan draft needs adjustment", detail: "Validation blocked confirmation before saving." };
+    }
+    if (result?.status === "plan_preview_not_recommended") {
+      return { title: "Milk plan not recommended yet" };
+    }
+    if (result?.status === "plan_preview_needs_medical_confirmation") {
+      return { title: "Medical confirmation needed" };
+    }
+    return { title: "Milk plan preview ready", detail: "Waiting for user confirmation before saving." };
+  }
+  if (toolName === "milk_calendar_change_preview") {
+    return { title: "Schedule preview ready", detail: "Waiting for user confirmation before applying." };
+  }
+  if (toolName === "milk_record_mutate") {
+    return { title: milkMutationResultTitle(result, "Milk record change saved") };
+  }
+  if (toolName === "milk_plan_mutate") {
+    return { title: milkMutationResultTitle(result, "Milk plan change saved") };
+  }
+  if (toolName === "milk_calendar_mutate") {
+    return { title: milkMutationResultTitle(result, "Schedule change saved") };
+  }
+  if (toolName === "milk_task_complete") {
+    return { title: milkTaskResultTitle(result) };
+  }
+  if (toolName === "infant_growth_mutate") {
+    return { title: milkMutationResultTitle(result, "Growth record saved") };
+  }
+  if (toolName && toolName !== "tool") {
+    return { title: `${capitalizeLabel(labelForTool(toolName))} completed` };
+  }
+  return { title: "Step completed" };
+}
+
+function capitalizeLabel(value) {
+  const text = String(value || "tool").trim();
+  if (!text) return "Tool";
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function milkMutationResultTitle(result, fallbackTitle) {
+  const status = String(result?.status || "");
+  if (status.includes("deleted")) return "Change deleted";
+  if (status.includes("updated") || status.includes("patched") || status.includes("shifted")) return "Change saved";
+  if (status.includes("created") || status.includes("applied")) return fallbackTitle;
+  if (status.includes("idempotent_replay")) return "Existing change reused";
+  return fallbackTitle;
+}
+
+function milkTaskResultTitle(result) {
+  const status = String(result?.status || "");
+  if (status === "milk_task_completed") return "Task marked complete";
+  if (status === "milk_task_completion_cancelled") return "Task completion cancelled";
+  if (status === "milk_task_skipped") return "Task skipped";
+  return "Task status saved";
 }
 
 function cssEscape(value) {

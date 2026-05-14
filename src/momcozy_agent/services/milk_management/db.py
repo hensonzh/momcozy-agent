@@ -66,29 +66,37 @@ def rows_to_dicts(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:
 
 
 def fetch_one(sql: str, params: Iterable[Any] = (), *, db_path: str | Path | None = None) -> dict[str, Any] | None:
+    conn: sqlite3.Connection | None = None
     try:
-        with connect(db_path, create=False) as conn:
-            row = conn.execute(sql, tuple(params)).fetchone()
-            return row_to_dict(row) if row is not None else None
+        conn = connect(db_path, create=False)
+        row = conn.execute(sql, tuple(params)).fetchone()
+        return row_to_dict(row) if row is not None else None
     except FileNotFoundError:
         return None
     except sqlite3.OperationalError as exc:
         if _is_missing_table_error(exc):
             return None
         raise
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def fetch_all(sql: str, params: Iterable[Any] = (), *, db_path: str | Path | None = None) -> list[dict[str, Any]]:
+    conn: sqlite3.Connection | None = None
     try:
-        with connect(db_path, create=False) as conn:
-            rows = conn.execute(sql, tuple(params)).fetchall()
-            return rows_to_dicts(rows)
+        conn = connect(db_path, create=False)
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        return rows_to_dicts(rows)
     except FileNotFoundError:
         return []
     except sqlite3.OperationalError as exc:
         if _is_missing_table_error(exc):
             return []
         raise
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def execute(sql: str, params: Iterable[Any] = (), *, db_path: str | Path | None = None) -> int:
@@ -100,6 +108,7 @@ def execute(sql: str, params: Iterable[Any] = (), *, db_path: str | Path | None 
 def _ensure_default_db_schema() -> None:
     from .. import data_store
 
+    data_store.DB_PATH = get_db_path()
     data_store.init_db()
 
 

@@ -33,8 +33,10 @@ CORE_IMMEDIATE_TOOLS: list[ToolName] = [
 ]
 MILK_MANAGEMENT_TOOLS: list[ToolName] = [
     "milk_snapshot_get",
+    "milk_status_query",
     "milk_assessment_evaluate",
     "infant_growth_evaluate",
+    "infant_growth_mutate",
     "milk_records_query",
     "milk_record_mutate",
     "milk_plan_query",
@@ -43,9 +45,11 @@ MILK_MANAGEMENT_TOOLS: list[ToolName] = [
     "milk_calendar_query",
     "milk_calendar_change_preview",
     "milk_calendar_mutate",
+    "milk_task_complete",
 ]
 MILK_MANAGEMENT_READ_ONLY_TOOLS: set[ToolName] = {
     "milk_snapshot_get",
+    "milk_status_query",
     "milk_assessment_evaluate",
     "infant_growth_evaluate",
     "milk_records_query",
@@ -65,7 +69,7 @@ DEFERRED_TOOL_NAMESPACES: dict[str, dict[str, Any]] = {
         "tool_names": ["device_manual_search", "support_ticket_draft_create"],
     },
     "milk_management": {
-        "description": "用于奶量评估、任意时间段记录读取/修改、追奶/稳奶/减奶计划、计划执行情况读取和奶量 calendar 调整的聚合工具。",
+        "description": "用于奶量状态聚合、奶量评估、宝宝生长记录、任意时间段记录读取/修改、追奶/稳奶/减奶计划、计划执行情况读取、任务完成和奶量 calendar 调整的聚合工具。",
         "tool_names": MILK_MANAGEMENT_TOOLS,
     },
 }

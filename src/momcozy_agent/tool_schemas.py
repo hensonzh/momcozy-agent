@@ -223,9 +223,24 @@ FUNCTION_TOOLS: dict[ToolName, FunctionToolDefinition] = {
         "GET 只读工具：读取当前用户奶量管理快照，包括用户/宝宝资料、最新计划元数据等轻量上下文。只返回结构化事实；最终解释由模型完成。",
         {},
     ),
+    "milk_status_query": _function_tool(
+        "milk_status_query",
+        "GET 只读工具：读取类似 MaiMomcozy 状态页的奶量聚合信息，包括妈妈宝宝资料、今日产奶/喂养、30 日趋势、宝宝生长记录和当天计划任务。适合用户问“现在状态怎么样”“今天数据”“状态页信息”。",
+        {
+            "section": {
+                "type": "string",
+                "enum": ["all", "overview", "today", "trend", "growth", "tasks"],
+                "description": "要读取的状态区块。常规状态问题用 all；只看今日用 today；只看趋势用 trend。",
+            },
+            "target_date": _nullable(ISO_DATE),
+            "trend_days": {"type": "integer", "description": "趋势天数，1-30；常规传 30。"},
+            "growth_history_limit": {"type": "integer", "description": "最多返回多少条宝宝生长记录，建议 5-10。"},
+            "include_tasks": {"type": "boolean", "description": "是否同时读取 target_date 当天计划任务。"},
+        },
+    ),
     "milk_records_query": _function_tool(
         "milk_records_query",
-        "GET 只读工具：读取任意时间段内的吸奶、亲喂、母乳瓶喂和奶粉瓶喂记录，返回结构化原始记录和聚合摘要。亲喂奶量如出现估算会明确标记为 estimated。",
+        "GET 只读工具：读取任意时间段内的吸奶、亲喂、母乳瓶喂和奶粉瓶喂记录，返回结构化原始记录和聚合摘要。用户问“过去一周/最近几天母乳情况、记录、趋势、每天多少”时优先只用本工具一次，通常 summary_granularity=daily 且 include_raw_records=false。不要在同一轮用相同 start_at/end_at/record_scope 重复调用；需要记录 ID 做修改/删除时才再次查询原始记录。亲喂奶量如出现估算会明确标记为 estimated。",
         {
             "start_at": {"type": "string", "description": "起始日期或日期时间，例如 2026-05-01 或 2026-05-01 08:00。"},
             "end_at": {"type": "string", "description": "结束日期或日期时间；日期会按整天处理并作为 exclusive end 的下一日 00:00。"},
@@ -320,9 +335,32 @@ FUNCTION_TOOLS: dict[ToolName, FunctionToolDefinition] = {
             "idempotency_key": {"type": "string"},
         },
     ),
+    "milk_task_complete": _function_tool(
+        "milk_task_complete",
+        "COMPLETE/CANCEL/SKIP 写入工具：确认后更新计划任务完成状态，可按用户提供的奶量/时长同步创建或删除关联吸奶/喂养记录。用于“这个完成了”“取消完成”“跳过这次”。有副作用；只有用户明确确认后才调用。",
+        {
+            "operation": {"type": "string", "enum": ["complete", "cancel_complete", "skip"]},
+            "target_date": _nullable(ISO_DATE),
+            "task_id": _nullable({"type": "integer", "description": "MaiMomcozy 计划任务 ID；若传 item_id 可为 null。"}),
+            "item_id": _nullable({"type": "integer", "description": "calendar item_id；若已通过 milk_calendar_query 定位，优先传 item_id。"}),
+            "record_kind": _nullable(
+                {
+                    "type": "string",
+                    "enum": ["pumping", "nursing", "breastmilk_bottle", "formula_bottle", "none"],
+                    "description": "要同步的真实记录类型。不确定时传 null 由工具按任务类型推断；只更新完成状态用 none。缺少真实奶量/时长时不要强行同步记录。",
+                }
+            ),
+            "amount_ml": _nullable({"type": "number", "description": "用户明确提供的实际吸奶量或瓶喂奶量 ml；未知传 null，不要用计划值代替。"}),
+            "duration_minutes": _nullable({"type": "integer", "description": "用户明确提供的实际吸奶或亲喂时长；未知传 null，不要用计划时长代替。"}),
+            "occurred_at": _nullable({"type": "string", "description": "实际完成时间，例如 2026-05-14 09:30 或 09:30；未知传 null 使用任务时间。"}),
+            "title": _nullable({"type": "string", "description": "同步记录标题/备注；未知传 null 使用任务内容。"}),
+            "delete_linked_record": {"type": "boolean", "description": "取消完成或跳过时是否删除该任务同步创建的记录；通常传 true。"},
+            "idempotency_key": {"type": "string"},
+        },
+    ),
     "milk_assessment_evaluate": _function_tool(
         "milk_assessment_evaluate",
-        "EVALUATE 只读工具：基于固定参考数据和记录聚合，返回近期奶量状态、缺失数据和规则命中。不是诊断，也不生成最终用户话术。",
+        "EVALUATE 只读工具：基于固定参考数据和记录聚合，返回近期奶量状态、缺失数据和规则命中。仅在用户明确问“是否正常、够不够、偏低/偏高、适合什么计划、生成追奶/稳奶/减奶计划”时调用；用户只问历史记录、过去一周母乳情况或每日趋势时不要默认调用。不是诊断，也不生成最终用户话术。",
         {
             "as_of_time": _nullable({"type": "string", "description": "可选 ISO-8601 评估时间；不确定时传 null。"}),
             "window_days": {"type": "integer", "description": "回看天数。主动追奶/减奶/稳奶通常用 1；全面评估通常用 7。"},
@@ -337,9 +375,24 @@ FUNCTION_TOOLS: dict[ToolName, FunctionToolDefinition] = {
             "as_of_time": _nullable({"type": "string", "description": "可选 ISO-8601 评估时间；不确定时传 null。"}),
         },
     ),
+    "infant_growth_mutate": _function_tool(
+        "infant_growth_mutate",
+        "CREATE/UPDATE 写入工具：新增、修改或更新今日宝宝身高、体重、头围记录。有副作用；只有用户明确确认后才调用。",
+        {
+            "operation": {"type": "string", "enum": ["create", "update", "upsert_today"]},
+            "growth_id": _nullable({"type": "integer", "description": "update 必填；create/upsert_today 传 null。"}),
+            "infant_id": _nullable({"type": "integer", "description": "宝宝 ID；不确定传 null 使用当前用户第一个宝宝。"}),
+            "height_cm": _nullable({"type": "number", "description": "身高/身长 cm；不修改传 null。"}),
+            "weight_kg": _nullable({"type": "number", "description": "体重 kg；不修改传 null。"}),
+            "head_cm": _nullable({"type": "number", "description": "头围 cm；不修改传 null。"}),
+            "target_date": _nullable({**ISO_DATE, "description": "记录日期；不确定传 null，由运行时当前日期补齐。"}),
+            "history_limit": {"type": "integer", "description": "写入后返回的历史记录条数，建议 5-10。"},
+            "idempotency_key": {"type": "string"},
+        },
+    ),
     "milk_plan_preview": _function_tool(
         "milk_plan_preview",
-        "PREVIEW 候选方案工具：按确定性规则生成追奶、稳奶或减奶计划草稿，不写数据库。也可基于 source_plan_id 重新生成草稿；如用户给出目标，可同时返回目标校验结果。保存前必须获得用户确认。",
+        "PREVIEW 候选方案工具：按确定性规则生成追奶、稳奶或减奶计划草稿，不写数据库，并返回保存前校验结果。只有返回 plan_preview_ready 且 data.validation.valid=true 时才能展示确认保存；如用户给出目标，可同时返回目标校验结果。",
         {
             "plan_type": _nullable({"type": "string", "enum": ["increase_milk", "maintain_milk", "decrease_milk"]}),
             "plan_days": _nullable({"type": "integer"}),

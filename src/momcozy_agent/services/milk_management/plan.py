@@ -206,12 +206,29 @@ def preview_milk_plan(
         "medical_disclaimer": "本计划仅供家庭喂养管理参考，不能替代医生、儿科医生或 IBCLC 的专业建议。",
         "source": "service_preview_v1",
     }
+    preview_validation = _preview_validation_data(user_id=uid, draft=draft)
+    if preview_validation.get("valid") is not True:
+        violations = preview_validation.get("violations") if isinstance(preview_validation.get("violations"), list) else []
+        return ok_result(
+            "plan_preview_needs_revision",
+            str(violations[0]) if violations else "计划草稿校验未通过。",
+            {
+                "requires_confirmation": False,
+                "draft": draft,
+                "validation": preview_validation,
+                "assessment": assessment_data,
+                "growth_assessment": growth_data,
+                "eligibility": eligibility,
+                "options": parsed_options,
+            },
+        )
     return ok_result(
         "plan_preview_ready",
         draft["summary"],
         {
             "requires_confirmation": True,
             "draft": draft,
+            "validation": preview_validation,
             "assessment": assessment_data,
             "growth_assessment": growth_data,
             "eligibility": eligibility,
@@ -693,6 +710,12 @@ def validate_milk_plan(
             "schedule_preview_lines": _validation_preview_lines(templates),
         },
     )
+
+
+def _preview_validation_data(*, user_id: str, draft: dict[str, Any]) -> dict[str, Any]:
+    validation = validate_milk_plan(user_id=user_id, plan=draft)
+    data = validation.get("data") if isinstance(validation.get("data"), dict) else {}
+    return dict(data)
 
 
 def evaluate_plan_eligibility(
@@ -1633,11 +1656,14 @@ def _plan_rules(
             require_pp = False
             needs_referral = False
         add_count = max(target_frequency - current_frequency, 0)
+        desired_pumping_count = max(pumping_count + add_count, pumping_count + 1, 1)
+        add_count = max(desired_pumping_count - pumping_count, 0)
+        target_frequency = max(target_frequency, current_frequency + add_count)
         return {
             "target_frequency": target_frequency,
             "add_count": add_count,
             "current_pumping_count": pumping_count,
-            "desired_pumping_count": max(pumping_count + add_count, pumping_count, 1),
+            "desired_pumping_count": desired_pumping_count,
             "require_pp": require_pp,
             "needs_referral": needs_referral,
             "max_interval_hours": 5,
@@ -2081,10 +2107,13 @@ def _derive_increase_schedule_requirements(
         target_frequency = max(current_frequency, INCREASE_LOW_FREQUENCY_TARGET)
         require_pp = False
     add_count = max(target_frequency - current_frequency, 0)
+    desired_pumping_count = max(current_pumping_count + add_count, current_pumping_count + 1, 1)
+    add_count = max(desired_pumping_count - current_pumping_count, 0)
+    target_frequency = max(target_frequency, current_frequency + add_count)
     return {
         "target_frequency": target_frequency,
         "add_count": add_count,
-        "desired_pumping_count": max(current_pumping_count + add_count, current_pumping_count, 1),
+        "desired_pumping_count": desired_pumping_count,
         "require_pp": require_pp,
         "needs_referral": False,
     }

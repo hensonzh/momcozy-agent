@@ -4,7 +4,7 @@
 
 ## 原则
 
-- `milk_plan_preview` 只生成草稿，不写 `milk_plan`，也不写 `calendar`。
+- `milk_plan_preview` 只生成草稿，不写 `milk_plan`，也不写 `calendar`；只有返回 `plan_preview_ready` 且 `data.validation.valid=true` 时，草稿才可展示给用户确认保存。
 - `milk_plan_mutate(operation="create")` 只能在用户确认后调用。
 - create 后同时保存 `milk_plan`，并把计划日程展开写入 `calendar`。
 - 不要承诺奶量一定增加、稳定或减少。
@@ -57,7 +57,7 @@
 
 ### 生成与保存
 
-1. 保存前确认 `milk_plan_preview` 返回的校验结果和 warnings；不要自行绕过工具边界。
+1. 保存前确认 `milk_plan_preview` 返回 `plan_preview_ready`、`data.requires_confirmation=true` 且 `data.validation.valid=true`；不要自行绕过工具边界。
 2. 用简洁语言展示：
    - 计划目标。
    - 执行天数。
@@ -65,9 +65,10 @@
    - 观察指标。
    - 安全提醒。
 3. 请用户选择：确认保存，或修改某一条任务/某个时间点/某一段阶段。
-4. 用户确认保存后，调用 `milk_plan_mutate(operation="create")`。
-5. 用户要求修改草稿时，按要求编辑完整草稿，再调用 `milk_plan_preview` 或 `milk_plan_mutate` 内部校验；校验通过并再次确认后，才调用 `milk_plan_mutate(operation="create")`。
-6. 修改边界：
+4. 如果 `milk_plan_preview` 返回 `plan_preview_needs_revision`、`plan_preview_not_recommended` 或 `data.validation.valid=false`，不要展示“确认保存”；只说明需要修改的点，并重新生成/调整草稿。
+5. 用户确认保存后，调用 `milk_plan_mutate(operation="create")`。
+6. 用户要求修改草稿时，按要求编辑完整草稿，再调用 `milk_plan_preview` 或 `milk_plan_mutate` 内部校验；校验通过并再次确认后，才调用 `milk_plan_mutate(operation="create")`。
+7. 修改边界：
    - 追奶：修改后吸奶任务次数必须大于当前吸奶次数；相邻两次吸奶间隔不超过 5 小时。
    - 减奶：目标奶量不能超过当前奶量；吸奶任务次数/频次不能超过当前。
    - 稳奶：吸奶任务次数不能改变。
@@ -80,13 +81,13 @@
 - 没有明确目标奶量：确认计划方向后直接 `milk_plan_preview`。
 - 用户只想看状态，不要计划：`milk_snapshot_get` -> 需要时 `milk_assessment_evaluate`。
 - 用户担心宝宝增长或摄入：`infant_growth_evaluate`，再决定是否计划。
-- 用户要保存草稿：先确认，再 `milk_plan_mutate(operation="create")`。
+- 用户要保存草稿：仅在上一次 `milk_plan_preview` 返回 `plan_preview_ready` 且 `data.validation.valid=true` 时，先确认，再 `milk_plan_mutate(operation="create")`。
 - 用户要改草稿：先用 `milk_plan_preview` 重新生成或校验候选方案，通过并确认后再保存或更新。
 - 用户要改已保存计划：`milk_plan_query(plan_id=...)` -> `milk_plan_preview(source_plan_id=...)` -> 确认后 `milk_plan_mutate(operation="update")`。
 
 ## 计划生成资格判断
 
-调用 `milk_plan_preview` 前后都要遵守下面的判断。`milk_plan_preview` 返回 `plan_preview_not_recommended` 或目标校验不通过时，不要继续调用 `milk_plan_mutate`，也不要自行编写计划。
+调用 `milk_plan_preview` 前后都要遵守下面的判断。`milk_plan_preview` 返回 `plan_preview_not_recommended`、`plan_preview_needs_revision`、目标校验不通过或 `data.validation.valid=false` 时，不要继续调用 `milk_plan_mutate`，也不要自行编写计划。
 
 避免重复评估：
 

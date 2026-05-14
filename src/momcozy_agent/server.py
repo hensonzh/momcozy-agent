@@ -154,6 +154,18 @@ def create_app(runtime: ChatRuntime | None = None, *, include_websocket_bridge: 
             return JSONResponse({"error": "not found"}, status_code=404)
         return FileResponse(asset_full, media_type=content_type)
 
+    @app.get("/")
+    async def web_index() -> Any:
+        return _web_file_response(WEB_ROOT / "index.html")
+
+    @app.get("/app.js")
+    async def web_app_js() -> Any:
+        return _web_file_response(WEB_ROOT / "app.js")
+
+    @app.get("/styles.css")
+    async def web_styles_css() -> Any:
+        return _web_file_response(WEB_ROOT / "styles.css")
+
     if include_websocket_bridge:
         from .api.chat_ws_bridge import router as chat_ws_router
 
@@ -163,6 +175,22 @@ def create_app(runtime: ChatRuntime | None = None, *, include_websocket_bridge: 
         app.mount("/", StaticFiles(directory=str(WEB_ROOT), html=True), name="web")
 
     return app
+
+
+def _web_file_response(path: Path) -> Any:
+    from fastapi.responses import FileResponse, JSONResponse
+
+    if not path.is_file():
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return FileResponse(
+        path,
+        media_type=STATIC_CONTENT_TYPES.get(path.suffix.lower()),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 def runtime_from_app(app: Any) -> ChatRuntime:

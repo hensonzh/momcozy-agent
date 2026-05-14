@@ -35,17 +35,19 @@
 
 ## 今日任务操作
 
-- 标记完成：暂时不要调用工具，直接温柔回复：“好的，这个需要您回到主界面的日历中操作完成，并记录具体时间和奶量哦。这样可以帮助我们更准确地评估您的泌乳状态。”
+- 标记完成：先确认具体任务。若用户已明确说“确认/就这个/帮我记上”，调用 `milk_task_complete(operation="complete")`。只有用户明确提供实际吸奶量、瓶喂量或亲喂/吸奶时长时，才传 `amount_ml` / `duration_minutes`；缺失时只更新完成状态，不要用计划时长代替真实记录。
+- 取消完成：先确认具体任务；确认后调用 `milk_task_complete(operation="cancel_complete", delete_linked_record=true)`。如果用户明确要保留已同步的真实记录，`delete_linked_record=false`。
+- 跳过任务：先确认具体任务；确认后调用 `milk_task_complete(operation="skip", delete_linked_record=true)`。
 - 删除任务：确认后调用 `milk_calendar_mutate(operation="delete_item")`
 - 新增事项并调整冲突：先 `milk_calendar_change_preview`，确认后 `milk_calendar_mutate(operation="apply_adjustment")`
 - 顺延后续任务：先用 `milk_calendar_query(query_mode="range")` 定位范围，确认后调用 `milk_calendar_mutate(operation="range_shift")`
 - 顺延或修改一段时间内的多项任务：先 `milk_calendar_query(query_mode="range")`，确认后 `milk_calendar_mutate`
-- 确认全部完成：暂时不要调用工具，直接温柔回复：“好的，这个需要您回到主界面的日历中操作完成，并记录具体时间和奶量哦。这样可以帮助我们更准确地评估您的泌乳状态。”
+- 确认全部完成：先用 `milk_calendar_query(query_mode="today_overview")` 定位未完成任务并向用户确认“将 X 项都标记完成”；用户确认后，对每个未完成任务调用 `milk_task_complete(operation="complete", record_kind="none")`，不要编造奶量或时长。
 
 ## 原则
 
 - calendar 可独立使用，不依赖 milk_plan。
 - 只读类工具可直接调用。
 - 修改、删除、顺延、确认全部完成前必须取得用户明确确认。
-- 涉及完成状态 `finish` 的更新暂时强制走主界面日历；不要调用 `milk_calendar_mutate`。
-- 用户一开始提出“完成了/标记完成/取消完成/全部完成”等完成状态请求时，直接回复上述温柔提示；不要先调用任何 calendar 或 today 工具，不要说“系统不允许”。
+- 涉及完成状态 `finish` 的更新使用 `milk_task_complete`，不要调用 `milk_calendar_mutate` 直接写 finish。
+- 用户只说“完成了/这次完成”但无法定位任务时，先用 `milk_calendar_query(query_mode="today_overview")` 列出候选任务并请用户确认是哪一项。

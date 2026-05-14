@@ -15,6 +15,7 @@ from ..services.milk_management.calendar import (
 )
 from ..services.milk_management.context import get_milk_context
 from ..services.milk_management.growth import evaluate_infant_growth
+from ..services.milk_management.growth_mutation import mutate_infant_growth
 from ..services.milk_management.plan import (
     apply_milk_plan,
     delete_milk_plan,
@@ -32,6 +33,8 @@ from ..services.milk_management.records import (
     get_records_range,
     update_record,
 )
+from ..services.milk_management.status import query_milk_status
+from ..services.milk_management.task_completion import complete_milk_task
 from ..services.milk_management.today import (
     get_today_overview,
     get_today_summary,
@@ -44,9 +47,15 @@ CALENDAR_UI_REQUIRED_MESSAGE = "好的，这个需要您回到主界面的日历
 def execute_milk_management_tool(args: dict[str, Any], inputs: RuntimeInputs) -> dict[str, Any]:
     name = str(args.get("_tool_name") or "")
     arguments = _with_user_id(args, inputs)
+    if name in {"milk_status_query", "milk_task_complete", "infant_growth_mutate"} and not arguments.get("target_date"):
+        runtime_date = _runtime_target_date(inputs)
+        if runtime_date:
+            arguments["target_date"] = runtime_date
 
     if name == "milk_snapshot_get":
         return dict(get_milk_context(**_pick(arguments, "user_id")))
+    if name == "milk_status_query":
+        return dict(query_milk_status(**_pick(arguments, "user_id", "section", "target_date", "trend_days", "growth_history_limit", "include_tasks")))
     if name == "milk_records_query":
         return dict(
             get_records_range(
@@ -79,10 +88,48 @@ def execute_milk_management_tool(args: dict[str, Any], inputs: RuntimeInputs) ->
         )
     if name == "milk_calendar_mutate":
         return _mutate_calendar(arguments)
+    if name == "milk_task_complete":
+        return dict(
+            complete_milk_task(
+                **_pick(
+                    arguments,
+                    "user_id",
+                    "operation",
+                    "target_date",
+                    "task_id",
+                    "item_id",
+                    "record_kind",
+                    "amount_ml",
+                    "duration_minutes",
+                    "occurred_at",
+                    "title",
+                    "delete_linked_record",
+                    "idempotency_key",
+                )
+            )
+        )
     if name == "milk_assessment_evaluate":
         return dict(evaluate_milk_status(**_pick(arguments, "user_id", "as_of_time", "window_days", "include_today")))
     if name == "infant_growth_evaluate":
         return dict(evaluate_infant_growth(**_pick(arguments, "user_id", "infant_id", "as_of_time")))
+    if name == "infant_growth_mutate":
+        return dict(
+            mutate_infant_growth(
+                **_pick(
+                    arguments,
+                    "user_id",
+                    "operation",
+                    "growth_id",
+                    "infant_id",
+                    "height_cm",
+                    "weight_kg",
+                    "head_cm",
+                    "target_date",
+                    "history_limit",
+                    "idempotency_key",
+                )
+            )
+        )
     if name == "milk_plan_preview":
         return _preview_plan(arguments)
     raise ValueError(f"Unknown milk-management tool: {name}")
@@ -298,6 +345,14 @@ def _pick(arguments: dict[str, Any], *keys: str) -> dict[str, Any]:
 
 def _operation(arguments: dict[str, Any]) -> str:
     return str(arguments.get("operation") or "").strip()
+
+
+def _runtime_target_date(inputs: RuntimeInputs) -> str:
+    for key in ("current_date", "message_sent_at"):
+        value = str(inputs.get(key) or "").strip()
+        if len(value) >= 10:
+            return value[:10]
+    return ""
 
 
 def _plan_from_patch_for_validation(patch: Any) -> dict[str, Any]:

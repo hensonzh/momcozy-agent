@@ -1411,8 +1411,16 @@ def pump_info(user_id: str) -> dict[str, Any]:
     return {"error": 0, "lactation_info_list": lactation_info_list}
 
 
+class _ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool:
+        try:
+            return bool(super().__exit__(exc_type, exc_value, traceback))
+        finally:
+            self.close()
+
+
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, factory=_ClosingConnection)
     conn.row_factory = sqlite3.Row
     return conn
 

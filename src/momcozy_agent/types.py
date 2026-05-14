@@ -36,6 +36,7 @@ ToolName = Literal[
     "device_manual_search",
     "support_ticket_draft_create",
     "milk_snapshot_get",
+    "milk_status_query",
     "milk_records_query",
     "milk_record_mutate",
     "milk_plan_query",
@@ -43,8 +44,10 @@ ToolName = Literal[
     "milk_calendar_query",
     "milk_calendar_change_preview",
     "milk_calendar_mutate",
+    "milk_task_complete",
     "milk_assessment_evaluate",
     "infant_growth_evaluate",
+    "infant_growth_mutate",
     "milk_plan_preview",
 ]
 
