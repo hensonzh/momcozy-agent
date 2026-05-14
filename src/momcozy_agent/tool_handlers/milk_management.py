@@ -9,7 +9,6 @@ from ..services.milk_management.calendar import (
     apply_calendar_adjustment,
     delete_calendar_item,
     get_calendar_range,
-    get_calendar_day,
     preview_calendar_adjustment,
     update_calendar_range,
     update_calendar_item,
@@ -34,10 +33,8 @@ from ..services.milk_management.records import (
     update_record,
 )
 from ..services.milk_management.today import (
-    confirm_today_tasks,
     get_today_overview,
     get_today_summary,
-    shift_today_tasks,
 )
 from ..types import RuntimeInputs
 
@@ -82,94 +79,12 @@ def execute_milk_management_tool(args: dict[str, Any], inputs: RuntimeInputs) ->
         )
     if name == "milk_calendar_mutate":
         return _mutate_calendar(arguments)
-    if name == "milk_context_get":
-        return dict(get_milk_context(**_pick(arguments, "user_id")))
     if name == "milk_assessment_evaluate":
         return dict(evaluate_milk_status(**_pick(arguments, "user_id", "as_of_time", "window_days", "include_today")))
     if name == "infant_growth_evaluate":
         return dict(evaluate_infant_growth(**_pick(arguments, "user_id", "infant_id", "as_of_time")))
     if name == "milk_plan_preview":
         return _preview_plan(arguments)
-    if name == "milk_plan_apply":
-        return dict(apply_milk_plan(**_pick(arguments, "user_id", "confirmed_plan", "idempotency_key")))
-    if name == "milk_plan_list":
-        return dict(list_milk_plans(**_pick(arguments, "user_id", "plan_type", "limit")))
-    if name == "milk_plan_get":
-        return dict(get_milk_plan(**_pick(arguments, "user_id", "plan_id")))
-    if name == "milk_plan_delete":
-        return dict(delete_milk_plan(**_pick(arguments, "user_id", "plan_id", "idempotency_key", "delete_calendar_items")))
-    if name == "milk_plan_update":
-        return dict(update_milk_plan(**_pick(arguments, "user_id", "plan_id", "patch", "idempotency_key", "reexpand_calendar")))
-    if name == "milk_plan_regenerate_preview":
-        return dict(
-            regenerate_milk_plan_preview(
-                **_pick(arguments, "user_id", "plan_id", "plan_type", "plan_days", "custom_target_daily_ml", "as_of_time", "options")
-            )
-        )
-    if name == "milk_plan_target_validate":
-        return dict(validate_milk_plan_target(**_pick(arguments, "user_id", "plan_type", "target_daily_ml", "delta_ml", "as_of_time")))
-    if name == "milk_plan_validate":
-        return dict(validate_milk_plan(**_pick(arguments, "user_id", "plan")))
-    if name == "milk_records_range_get":
-        return dict(
-            get_records_range(
-                **_pick(arguments, "user_id", "start_at", "end_at", "record_scope", "include_raw_records", "summary_granularity", "limit")
-            )
-        )
-    if name == "milk_record_create":
-        return dict(
-            create_record(
-                **_pick(arguments, "user_id", "record_kind", "occurred_at", "amount_ml", "duration_minutes", "infant_id", "title", "idempotency_key")
-            )
-        )
-    if name == "milk_record_update":
-        return dict(update_record(**_pick(arguments, "user_id", "record_kind", "record_id", "patch", "idempotency_key")))
-    if name == "milk_record_delete":
-        return dict(delete_record(**_pick(arguments, "user_id", "record_kind", "record_id", "idempotency_key")))
-    if name == "milk_today_overview_get":
-        return dict(get_today_overview(**_pick(arguments, "user_id", "target_date", "plan_id")))
-    if name == "milk_today_summary_get":
-        return dict(get_today_summary(**_pick(arguments, "user_id", "target_date", "plan_id")))
-    if name == "milk_today_tasks_shift":
-        return dict(shift_today_tasks(**_pick(arguments, "user_id", "target_date", "shift_minutes", "from_time", "plan_id", "idempotency_key")))
-    if name == "milk_today_tasks_confirm":
-        if not _llm_calendar_finish_updates_enabled():
-            return _calendar_ui_required_result()
-        return dict(confirm_today_tasks(**_pick(arguments, "user_id", "target_date", "plan_id", "idempotency_key")))
-    if name == "milk_calendar_day_get":
-        return dict(get_calendar_day(**_pick(arguments, "user_id", "target_date", "plan_id", "item_type")))
-    if name == "milk_calendar_range_get":
-        return dict(get_calendar_range(**_pick(arguments, "user_id", "start_at", "end_at", "plan_id", "item_type", "include_items", "limit")))
-    if name == "milk_calendar_adjustment_preview":
-        return dict(
-            preview_calendar_adjustment(
-                **_pick(
-                    arguments,
-                    "user_id",
-                    "target_date",
-                    "event_start_time",
-                    "event_end_time",
-                    "duration_minutes",
-                    "content",
-                    "item_type",
-                    "plan_id",
-                )
-            )
-        )
-    if name == "milk_calendar_adjustment_apply":
-        return dict(apply_calendar_adjustment(**_pick(arguments, "user_id", "target_date", "proposal", "idempotency_key")))
-    if name == "milk_calendar_range_update":
-        return dict(
-            update_calendar_range(
-                **_pick(arguments, "user_id", "start_at", "end_at", "operation", "patch", "plan_id", "item_type", "idempotency_key")
-            )
-        )
-    if name == "milk_calendar_item_update":
-        if _calendar_item_update_has_finish(arguments) and not _llm_calendar_finish_updates_enabled():
-            return _calendar_ui_required_result()
-        return dict(update_calendar_item(**_calendar_item_update_arguments(arguments)))
-    if name == "milk_calendar_item_delete":
-        return dict(delete_calendar_item(**_pick(arguments, "user_id", "item_id")))
     raise ValueError(f"Unknown milk-management tool: {name}")
 
 

@@ -1441,7 +1441,7 @@ def _plan_updates_from_patch(patch: dict[str, Any], payload_plan: dict[str, Any]
             "plan_type": _normalize_plan_type(payload_plan.get("plan_type")),
             "summary": norm_text(payload_plan.get("summary")),
             "plan": payload_plan,
-            "updated_by": "milk_plan_update",
+            "updated_by": "milk_plan_mutate",
         }
         updates["plan_payload_json"] = json.dumps(payload, ensure_ascii=False)
     elif "plan_payload_json" in patch:
