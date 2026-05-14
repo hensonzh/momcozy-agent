@@ -42,12 +42,28 @@ def main() -> None:
     assert "support_ticket_draft_create" in initial_deferred_tool_names
     assert "device_manual_search" not in initial_tool_names
     assert "device_manual_search" in initial_deferred_tool_names
-    assert "milk_context_get" not in initial_tool_names
-    assert "milk_context_get" in initial_deferred_tool_names
+    assert "milk_snapshot_get" not in initial_tool_names
+    assert "milk_snapshot_get" in initial_deferred_tool_names
+    assert "milk_context_get" not in initial_deferred_tool_names
     assert "milk_plan_preview" not in initial_tool_names
     assert "milk_plan_preview" in initial_deferred_tool_names
-    assert "milk_calendar_adjustment_apply" not in initial_tool_names
-    assert "milk_calendar_adjustment_apply" in initial_deferred_tool_names
+    assert "milk_calendar_mutate" not in initial_tool_names
+    assert "milk_calendar_mutate" in initial_deferred_tool_names
+    assert "milk_calendar_adjustment_apply" not in initial_deferred_tool_names
+    expected_milk_deferred_tools = {
+        "milk_snapshot_get",
+        "milk_assessment_evaluate",
+        "infant_growth_evaluate",
+        "milk_records_query",
+        "milk_record_mutate",
+        "milk_plan_query",
+        "milk_plan_preview",
+        "milk_plan_mutate",
+        "milk_calendar_query",
+        "milk_calendar_change_preview",
+        "milk_calendar_mutate",
+    }
+    assert expected_milk_deferred_tools <= initial_deferred_tool_names
     for removed_tool_name in (
         "ibclc_book",
         "reminder_create",
@@ -59,6 +75,30 @@ def main() -> None:
         "feeding_log_query",
         "pumping_log_query",
         "trend_calculate",
+        "milk_context_get",
+        "milk_plan_apply",
+        "milk_plan_list",
+        "milk_plan_get",
+        "milk_plan_delete",
+        "milk_plan_update",
+        "milk_plan_regenerate_preview",
+        "milk_plan_target_validate",
+        "milk_plan_validate",
+        "milk_records_range_get",
+        "milk_record_create",
+        "milk_record_update",
+        "milk_record_delete",
+        "milk_today_overview_get",
+        "milk_today_summary_get",
+        "milk_today_tasks_shift",
+        "milk_today_tasks_confirm",
+        "milk_calendar_day_get",
+        "milk_calendar_range_get",
+        "milk_calendar_adjustment_preview",
+        "milk_calendar_adjustment_apply",
+        "milk_calendar_range_update",
+        "milk_calendar_item_update",
+        "milk_calendar_item_delete",
     ):
         assert removed_tool_name not in initial_tool_names
         assert removed_tool_name not in initial_deferred_tool_names

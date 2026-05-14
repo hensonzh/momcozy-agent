@@ -313,7 +313,7 @@ message_sent_at: 2026-05-05T17:45:03+08:00
 
 - `care_handoffs`：`handoff_summary_generate`
 - `device_support`：`device_manual_search`、`support_ticket_draft_create`
-- `milk_management`：奶量评估、宝宝生长评估、任意时间段记录读取/修改、追奶/稳奶/减奶计划、今日安排、日结、计划执行情况和 calendar 调整工具
+- `milk_management`：聚合后的奶量工具，包括 `milk_snapshot_get`、`milk_records_query`、`milk_record_mutate`、`milk_plan_query`、`milk_plan_preview`、`milk_plan_mutate`、`milk_calendar_query`、`milk_calendar_change_preview`、`milk_calendar_mutate`，以及评估类 `milk_assessment_evaluate`、`infant_growth_evaluate`
 
 每个 namespace 中的 function 都设置 `defer_loading: true`。模型开始时只看到 namespace 名称和描述；需要具体工具时由 `tool_search` 加载对应 function schema。
 

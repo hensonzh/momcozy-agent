@@ -1,6 +1,6 @@
 # 日程调整流程
 
-适用于用户查询、新增、修改或删除奶量管理 calendar 内容，包括时间、条目内容、类型和完成状态。真实吸奶/喂养记录的新增、修改、删除使用 `milk_record_*`，不要用 calendar 工具代替。
+适用于用户查询、新增、修改或删除奶量管理 calendar 内容，包括时间、条目内容、类型和完成状态。真实吸奶/喂养记录的新增、修改、删除使用 `milk_record_mutate`，不要用 calendar 工具代替。
 
 ## 原则
 
@@ -24,10 +24,7 @@
 ## 查询日程
 
 1. 明确日期；如果用户没说日期，默认今天。
-2. 调用 `milk_calendar_day_get`：
-   - `user_id`
-   - `target_date`
-   - 如用户限定计划或类型，再传 `plan_id` / `item_type`
+2. 调用 `milk_calendar_query(query_mode="range")`，日期按整天范围处理；如用户限定计划或类型，再传 `plan_id` / `item_type`。
 3. 用简洁语言展示当天条目、时间、类型和完成状态。
 4. 不调用写工具。
 
@@ -36,7 +33,7 @@
 适用于“过去一周计划完成怎么样”“查看未来三天安排”“今天下午到明天上午有哪些吸奶任务”等。
 
 1. 明确起止时间；如果用户只给日期，按整天范围处理。
-2. 调用 `milk_calendar_range_get`：
+2. 调用 `milk_calendar_query(query_mode="range")`：
    - `user_id`
    - `start_at`
    - `end_at`
@@ -57,7 +54,7 @@
    - 明确是吸奶/排奶/泵奶：`item_type="吸奶"`。
    - 明确是亲喂：`item_type="亲喂"`。
    - 吃饭、外出、开会、接孩子、上课、睡觉、通勤等：`item_type="自定义"`。
-3. 时间确认后，调用 `milk_calendar_adjustment_preview`：
+3. 时间确认后，调用 `milk_calendar_change_preview`：
    - `user_id`
    - `target_date`
    - `event_start_time`
@@ -71,45 +68,42 @@
    - 哪个吸奶/亲喂任务会调整。
    - 调整前后时间。
 5. 询问用户是否确认。
-6. 用户明确确认后，调用 `milk_calendar_adjustment_apply`：
+6. 用户明确确认后，调用 `milk_calendar_mutate(operation="apply_adjustment")`：
    - `user_id`
    - `target_date`
    - `proposal`：必须传入 preview 返回的完整 `proposal` 或 `proposal_json`，不要自行丢弃 `insert_event` / `updates`
    - `idempotency_key`
 7. 返回更新后的日程摘要，说明新增事项和被调整的吸奶/亲喂任务。
-8. 如果 preview 显示没有冲突，仍然需要用户确认后再调用 `milk_calendar_adjustment_apply`，因为新增事项本身也需要写入 calendar。
+8. 如果 preview 显示没有冲突，仍然需要用户确认后再调用 `milk_calendar_mutate(operation="apply_adjustment")`，因为新增事项本身也需要写入 calendar。
 
 ## 修改已有条目
 
 适用于用户修改某个 calendar 条目的时间、内容、类型或完成状态。
 
-1. 如果用户没有明确目标条目，先调用 `milk_calendar_day_get`：
-   - `user_id`
-   - `target_date`
-   - 必要时传 `item_type`
+1. 如果用户没有明确目标条目，先调用 `milk_calendar_query(query_mode="range")` 查询当天或指定范围，必要时传 `item_type`。
 2. 让用户确认要修改哪一条；不要凭模糊描述直接写。
 3. 根据用户想改的字段构造 `patch`：
    - 改时间：`start_time`，必要时 `end_time`
    - 改内容：`content`
    - 改类型：`type` 或 `item_type`，值只能是 `吸奶`、`亲喂`、`自定义`
    - 改完成状态：`finish`
-4. 用户确认后，调用 `milk_calendar_item_update`：
+4. 用户确认后，调用 `milk_calendar_mutate(operation="update_item")`：
    - `user_id`
    - `item_id`
    - `patch`
    - `idempotency_key`
-5. 如需展示最新日程，再调用 `milk_calendar_day_get`。
+5. 如需展示最新日程，再调用 `milk_calendar_query(query_mode="range")`。
 
 ## 批量修改范围日程
 
 适用于“把今天下午所有吸奶任务推迟 30 分钟”“删除明天上午的计划”“把未来三天这几条任务分别改到新时间”等。
 
 1. 先明确起止时间、操作类型和影响范围；不明确时先补问。
-2. 调用 `milk_calendar_range_get` 定位范围内条目。
+2. 调用 `milk_calendar_query(query_mode="range")` 定位范围内条目。
 3. 向用户说明将影响的条目数量、日期、类型和时间；询问确认。
-4. 用户明确确认后，调用 `milk_calendar_range_update`：
-   - `operation="shift"`：`patch={"shift_minutes": 30}` 或负数表示提前。
-   - `operation="delete"`：删除范围内匹配条目，必须确保范围足够明确。
+4. 用户明确确认后，调用 `milk_calendar_mutate`：
+   - `operation="range_shift"`：`patch={"shift_minutes": 30}` 或负数表示提前。
+   - `operation="range_delete"`：删除范围内匹配条目，必须确保范围足够明确。
    - `operation="patch_items"`：先读取条目，再传 `patch={"updates":[{"item_id":..., "start_time":"09:00", "end_time":"09:30"}]}`。
 5. 返回更新后的范围摘要。
 6. 涉及完成状态 `finish` 的批量更新仍然不允许调用工具，走“完成状态同步”。
@@ -119,25 +113,21 @@
 暂时关闭 LLM 侧完成状态写入。
 
 1. 用户要把条目标记为完成、取消完成、确认全部完成，或修改任何 `finish` 状态时，不调用任何工具。
-2. 不先调用 `milk_calendar_day_get`、`milk_today_overview_get` 或 `milk_today_summary_get` 来核对当前日程。
+2. 不先调用 `milk_calendar_query` 来核对当前日程。
 3. 直接温柔回复：“好的，这个需要您回到主界面的日历中操作完成，并记录具体时间和奶量哦。这样可以帮助我们更准确地评估您的泌乳状态。”
 4. 不说“系统不允许”“工具失败”“我无法直接修改”等内部原因。
-5. 不调用 `milk_calendar_item_update`。
-6. 不调用 `milk_today_tasks_confirm`。
-7. 服务层保留未来同步逻辑；当前对话入口不启用。
+5. 不调用 `milk_calendar_mutate`。
+6. 服务层保留未来同步逻辑；当前对话入口不启用。
 
 ## 删除条目
 
-1. 如果用户没有明确目标条目，先调用 `milk_calendar_day_get`：
-   - `user_id`
-   - `target_date`
-   - 必要时传 `item_type`
+1. 如果用户没有明确目标条目，先调用 `milk_calendar_query(query_mode="range")` 查询当天或指定范围，必要时传 `item_type`。
 2. 让用户确认要删除哪一条。
-3. 用户明确确认后，调用 `milk_calendar_item_delete`：
+3. 用户明确确认后，调用 `milk_calendar_mutate(operation="delete_item")`：
    - `user_id`
    - `item_id`
    - `idempotency_key`
-4. 如需展示最新日程，再调用 `milk_calendar_day_get`。
+4. 如需展示最新日程，再调用 `milk_calendar_query(query_mode="range")`。
 
 ## 确认规则
 
@@ -159,8 +149,7 @@
 ## 重要限制
 
 - 用户只说“下午要去吃饭”“晚点外出”时，不能直接 preview；必须先确认具体时间或持续时长。
-- 用户确认前，不能调用 `milk_calendar_adjustment_apply`、`milk_calendar_item_update` 或 `milk_calendar_item_delete`。
-- 用户确认前，不能调用 `milk_calendar_range_update`。
-- 涉及 `finish` 的请求，即使用户确认，也暂时不能调用任何工具，尤其不能调用 `milk_calendar_item_update` 或 `milk_today_tasks_confirm`。
+- 用户确认前，不能调用 `milk_calendar_mutate`。
+- 涉及 `finish` 的请求，即使用户确认，也暂时不能调用任何写工具，尤其不能调用 `milk_calendar_mutate`。
 - 如果用户新增的是吃饭/外出等生活事项，必须作为 `自定义` 事项写入 calendar。
 - 如果用户新增的是吸奶或亲喂，必须按对应类型写入 calendar。

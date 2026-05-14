@@ -5,8 +5,8 @@
 ## 原则
 
 - `milk_plan_preview` 只生成草稿，不写 `milk_plan`，也不写 `calendar`。
-- `milk_plan_apply` 只能在用户确认后调用。
-- apply 后同时保存 `milk_plan`，并把计划日程展开写入 `calendar`。
+- `milk_plan_mutate(operation="create")` 只能在用户确认后调用。
+- create 后同时保存 `milk_plan`，并把计划日程展开写入 `calendar`。
 - 不要承诺奶量一定增加、稳定或减少。
 
 ## 流程
@@ -34,11 +34,11 @@
    - 主动减奶：问“是否仍希望制定减奶计划？”
    - 主动稳奶：问“是否生成稳奶计划？”
 5. 如果妈妈不确认生成计划，不调用 `milk_plan_preview`；只给生活习惯、记录、观察和必要就医建议。
-6. 如果用户明确提出目标奶量、增奶量或减奶量，先调用 `milk_plan_target_validate`；这是“用户主动给目标”时的校验工具。
-7. 如果妈妈确认生成计划，调用 `milk_plan_preview`。为了避免重复评估，必须把第 2 步结果放入 `options.prepared_assessment`。
-   - 如果用户没有明确目标奶量，不要调用 `milk_plan_target_validate`；由 `milk_plan_preview` 按当前奶量、参考范围和追/减/稳奶规则生成默认目标。
+6. 如果妈妈确认生成计划，调用 `milk_plan_preview`。为了避免重复评估，必须把第 2 步结果放入 `options.prepared_assessment`。
+   - 如果用户明确提出目标奶量、增奶量或减奶量，把 `target_daily_ml` 或 `delta_ml` 一并传给 `milk_plan_preview`；工具会返回目标校验结果。
+   - 如果用户没有明确目标奶量，由 `milk_plan_preview` 按当前奶量、参考范围和追/减/稳奶规则生成默认目标。
    - 对追奶计划，未知目标时 `milk_plan_preview` 应保证默认目标不低于当前奶量 +50ml，并避免超过 P85 参考上限。
-   - 对减奶计划，未知目标时 `milk_plan_preview` 生成默认每日减少量；明确目标时 `milk_plan_target_validate` 校验减少量必须在 50ml/天到当前参考日奶量之间。
+   - 对减奶计划，未知目标时 `milk_plan_preview` 生成默认每日减少量；明确目标时由 `milk_plan_preview` 校验减少量必须在 50ml/天到当前参考日奶量之间。
 
 ### 路径 B：妈妈询问哪种计划适合自己
 
@@ -46,7 +46,7 @@
 
 1. 进行全面评估：
    - 调用 `milk_assessment_evaluate`，参数建议为 `window_days=7`、`include_today=false`。
-   - 需要读取基础资料或最新计划时，调用 `milk_context_get`。
+   - 需要读取基础资料或最新计划时，调用 `milk_snapshot_get`。
    - 用户提到体重、身高、增长、摄入是否足够或宝宝发育时，调用 `infant_growth_evaluate`。
 2. 根据全面评估结果推荐计划类型：
    - 奶量偏低：通常推荐 `increase_milk`。
@@ -57,7 +57,7 @@
 
 ### 生成与保存
 
-1. 保存前调用 `milk_plan_validate` 校验完整计划。
+1. 保存前确认 `milk_plan_preview` 返回的校验结果和 warnings；不要自行绕过工具边界。
 2. 用简洁语言展示：
    - 计划目标。
    - 执行天数。
@@ -65,8 +65,8 @@
    - 观察指标。
    - 安全提醒。
 3. 请用户选择：确认保存，或修改某一条任务/某个时间点/某一段阶段。
-4. 用户确认保存后，调用 `milk_plan_apply`。
-5. 用户要求修改时，先按要求编辑完整草稿，再调用 `milk_plan_validate` 校验边界；校验通过并再次确认后，才调用 `milk_plan_apply`。
+4. 用户确认保存后，调用 `milk_plan_mutate(operation="create")`。
+5. 用户要求修改草稿时，按要求编辑完整草稿，再调用 `milk_plan_preview` 或 `milk_plan_mutate` 内部校验；校验通过并再次确认后，才调用 `milk_plan_mutate(operation="create")`。
 6. 修改边界：
    - 追奶：修改后吸奶任务次数必须大于当前吸奶次数；相邻两次吸奶间隔不超过 5 小时。
    - 减奶：目标奶量不能超过当前奶量；吸奶任务次数/频次不能超过当前。
@@ -75,18 +75,18 @@
 ## 快速工具路径
 
 - 主动要求追奶、减奶或稳奶：`milk_assessment_evaluate(window_days=1, include_today=false)` -> 向妈妈确认 -> `milk_plan_preview`，并在 `options.prepared_assessment` 复用 24h 评估数据。
-- 只说“泌乳计划/奶量管理计划/哪种适合我”：`milk_assessment_evaluate(window_days=7, include_today=false)` -> 必要时 `milk_context_get` / `infant_growth_evaluate` -> 推荐计划类型并确认 -> `milk_plan_preview`。
-- 有明确目标奶量、增奶量或减奶量：`milk_assessment_evaluate(window_days=1, include_today=false)` -> `milk_plan_target_validate` -> 向妈妈确认 -> `milk_plan_preview`。
-- 没有明确目标奶量：不要调用 `milk_plan_target_validate`，确认计划方向后直接 `milk_plan_preview`。
-- 用户只想看状态，不要计划：`milk_context_get` -> 需要时 `milk_assessment_evaluate`。
+- 只说“泌乳计划/奶量管理计划/哪种适合我”：`milk_assessment_evaluate(window_days=7, include_today=false)` -> 必要时 `milk_snapshot_get` / `infant_growth_evaluate` -> 推荐计划类型并确认 -> `milk_plan_preview`。
+- 有明确目标奶量、增奶量或减奶量：`milk_assessment_evaluate(window_days=1, include_today=false)` -> 向妈妈确认 -> `milk_plan_preview(target_daily_ml=... 或 delta_ml=...)`。
+- 没有明确目标奶量：确认计划方向后直接 `milk_plan_preview`。
+- 用户只想看状态，不要计划：`milk_snapshot_get` -> 需要时 `milk_assessment_evaluate`。
 - 用户担心宝宝增长或摄入：`infant_growth_evaluate`，再决定是否计划。
-- 用户要保存草稿：先确认，再 `milk_plan_apply`。
-- 用户要改草稿：`milk_plan_validate`，通过并确认后再保存或更新。
-- 用户要改已保存计划：`milk_plan_get` -> `milk_plan_regenerate_preview` 或 `milk_plan_validate` -> 确认后 `milk_plan_update`。
+- 用户要保存草稿：先确认，再 `milk_plan_mutate(operation="create")`。
+- 用户要改草稿：先用 `milk_plan_preview` 重新生成或校验候选方案，通过并确认后再保存或更新。
+- 用户要改已保存计划：`milk_plan_query(plan_id=...)` -> `milk_plan_preview(source_plan_id=...)` -> 确认后 `milk_plan_mutate(operation="update")`。
 
 ## 计划生成资格判断
 
-调用 `milk_plan_preview` 前后都要遵守下面的判断。`milk_plan_preview` 返回 `plan_preview_not_recommended` 时，不要继续调用 `milk_plan_apply`，也不要自行编写计划。
+调用 `milk_plan_preview` 前后都要遵守下面的判断。`milk_plan_preview` 返回 `plan_preview_not_recommended` 或目标校验不通过时，不要继续调用 `milk_plan_mutate`，也不要自行编写计划。
 
 避免重复评估：
 
@@ -113,17 +113,17 @@
 
 用户修改计划时间表或目标后：
 
-- 先调用 `milk_plan_validate`。
+- 先调用 `milk_plan_preview(source_plan_id=...)` 或让 `milk_plan_mutate` 执行内部校验。
 - 校验不通过时，只说明需要修改的点，不保存。
-- 校验通过后，再请用户确认；用户确认后调用 `milk_plan_update` 或 `milk_plan_apply`。
-- 追奶、减奶、稳奶的修改边界由 `milk_plan_validate` 校验，不要绕过校验直接写入。
+- 校验通过后，再请用户确认；用户确认后调用 `milk_plan_mutate(operation="update")` 或 `milk_plan_mutate(operation="create")`。
+- 追奶、减奶、稳奶的修改边界由工具校验，不要绕过校验直接写入。
 
 ## 目标差异
 
 追奶：
 
 - 关注频率、夜间/清晨安排、记录奶量和宝宝有效摄入信号。
-- 未知目标时，`milk_plan_preview` 负责生成默认追奶目标；`milk_plan_target_validate` 只用于用户主动提出目标奶量或增减量。
+- 未知目标时，`milk_plan_preview` 负责生成默认追奶目标；用户主动提出目标奶量或增减量时，把目标作为 `target_daily_ml` 或 `delta_ml` 传入 `milk_plan_preview`。
 - 默认追奶目标：不低于当前奶量 +50ml；如果超过 P85 参考上限，应提示风险并不建议。
 - 每日产奶缺口 `<=300ml/天` 且当前吸奶+亲喂频率 `<8次/天`：目标频率为 8 次/天，新增次数为 `8 - 当前频率`。
 - 每日产奶缺口 `>300ml/天`，或当前吸奶+亲喂频率 `8-9次/天`：目标频率为 10 次/天，新增次数为 `10 - 当前频率`，并安排 1 次 PP 追奶。
@@ -140,7 +140,7 @@
 减奶：
 
 - 更谨慎，避免过快减少；如宝宝摄入或生长信号不明确，先建议补充信息或寻求专业建议。
-- 减奶目标是每日减少量，`milk_plan_target_validate` 只在用户明确提出目标奶量或减少量时调用；减少量下限 50ml/天，上限为当前参考日奶量。
+- 减奶目标是每日减少量，用户明确提出目标奶量或减少量时，把目标作为 `target_daily_ml` 或 `delta_ml` 传入 `milk_plan_preview`；减少量下限 50ml/天，上限为当前参考日奶量。
 - 未知目标但评估适合减奶时，`milk_plan_preview` 负责生成默认目标和阶段计划。
 - 当前频次为吸奶+亲喂：`>=12次/天` 时先确认排除高泌乳素血症等病理因素，每 7 天减少 1 次；`3-12次/天` 且未满10月龄，每 7 天减少 1 次，优先减少每次时长并避免亲喂后用吸奶器；`>=10月龄且 <5次/天` 每 3 天减少 1 次；`<3次/天` 每 2 天减少 1 次。
 - 后续阶段不应增加吸奶任务数量；每阶段通常只减少一个吸奶点。

@@ -4,13 +4,13 @@
 
 ## 今日安排
 
-调用 `milk_today_overview_get` 读取当天 calendar，返回任务总数、已完成数、未完成数和任务列表。
+调用 `milk_calendar_query(query_mode="today_overview")` 读取当天 calendar，返回任务总数、已完成数、未完成数和任务列表。
 
-如果用户问的不是今天，而是“过去几天/本周/未来几天”的计划执行情况，调用 `milk_calendar_range_get`，不要把多日问题拆成多次今日查询。
+如果用户问的不是今天，而是“过去几天/本周/未来几天”的计划执行情况，调用 `milk_calendar_query(query_mode="range")`，不要把多日问题拆成多次今日查询。
 
 ## 今日日结
 
-调用 `milk_today_summary_get` 汇总当天 calendar 完成情况。
+调用 `milk_calendar_query(query_mode="today_summary")` 汇总当天 calendar 完成情况。
 
 面向用户展示时只保留以下内容，不展开任务列表、吸奶记录、喂养记录、数据库字段或工具返回的完整 JSON：
 
@@ -36,10 +36,10 @@
 ## 今日任务操作
 
 - 标记完成：暂时不要调用工具，直接温柔回复：“好的，这个需要您回到主界面的日历中操作完成，并记录具体时间和奶量哦。这样可以帮助我们更准确地评估您的泌乳状态。”
-- 删除任务：调用 `milk_calendar_item_delete`
-- 新增事项并调整冲突：先 `milk_calendar_adjustment_preview`，确认后 `milk_calendar_adjustment_apply`
-- 顺延后续任务：调用 `milk_today_tasks_shift`
-- 顺延或修改一段时间内的多项任务：先 `milk_calendar_range_get`，确认后 `milk_calendar_range_update`
+- 删除任务：确认后调用 `milk_calendar_mutate(operation="delete_item")`
+- 新增事项并调整冲突：先 `milk_calendar_change_preview`，确认后 `milk_calendar_mutate(operation="apply_adjustment")`
+- 顺延后续任务：先用 `milk_calendar_query(query_mode="range")` 定位范围，确认后调用 `milk_calendar_mutate(operation="range_shift")`
+- 顺延或修改一段时间内的多项任务：先 `milk_calendar_query(query_mode="range")`，确认后 `milk_calendar_mutate`
 - 确认全部完成：暂时不要调用工具，直接温柔回复：“好的，这个需要您回到主界面的日历中操作完成，并记录具体时间和奶量哦。这样可以帮助我们更准确地评估您的泌乳状态。”
 
 ## 原则
@@ -47,5 +47,5 @@
 - calendar 可独立使用，不依赖 milk_plan。
 - 只读类工具可直接调用。
 - 修改、删除、顺延、确认全部完成前必须取得用户明确确认。
-- 涉及完成状态 `finish` 的更新暂时强制走主界面日历；不要调用 `milk_calendar_item_update` 或 `milk_today_tasks_confirm`。
+- 涉及完成状态 `finish` 的更新暂时强制走主界面日历；不要调用 `milk_calendar_mutate`。
 - 用户一开始提出“完成了/标记完成/取消完成/全部完成”等完成状态请求时，直接回复上述温柔提示；不要先调用任何 calendar 或 today 工具，不要说“系统不允许”。
