@@ -10,6 +10,8 @@ api = ["openai"]
 server = [
     "openai",
     "fastapi>=0.115",
+    "httpx",
+    "python-multipart",
     "uvicorn>=0.30",
     "websockets>=12",
 ]

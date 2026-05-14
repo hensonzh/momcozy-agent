@@ -179,6 +179,7 @@ def preview_milk_plan(
         )
     schedule_templates = _daily_schedule_templates(normalized_type, days, schedule_items, plan_rules)
     title = _plan_title(normalized_type)
+    rule_notes = _plan_rule_notes(normalized_type, plan_rules)
     draft = {
         "plan_type": normalized_type,
         "plan_name": f"{title}{days}天",
@@ -196,7 +197,8 @@ def preview_milk_plan(
             "items": schedule_templates[0]["items"] if schedule_templates else schedule_items,
         },
         "daily_schedule_templates": schedule_templates,
-        "rule_notes": _plan_rule_notes(normalized_type, plan_rules),
+        "rule_notes": rule_notes,
+        "advice": rule_notes,
         "review_note": _review_note(normalized_type),
         "repeat_note": _repeat_note(normalized_type, days, plan_rules),
         "watch_items": _watch_items(normalized_type),
@@ -718,6 +720,7 @@ def evaluate_plan_eligibility(
             "growth_status": growth_status,
             "message": "奶量偏高且已观察3-5天仍持续异常，可生成减奶计划草稿；仍需避免突然减奶并继续观察宝宝摄入和妈妈不适。",
             "rule_notes": ["每阶段只减少一个吸奶点。", "若胀痛、硬块、发烧或宝宝摄入变化，暂停并寻求专业评估。"],
+            "suggestions": ["每阶段只减少一个吸奶点。", "若胀痛、硬块、发烧或宝宝摄入变化，暂停并寻求专业评估。"],
         }
 
     if milk_status == "high" and growth_status == "normal":
@@ -735,6 +738,11 @@ def evaluate_plan_eligibility(
                 "避免因为单日偏高就突然减奶。",
                 "关注胀痛、硬块、发烧、宝宝摄入和尿布情况。",
             ],
+            "suggestions": [
+                "继续记录每次吸奶量、亲喂和瓶喂情况。",
+                "避免因为单日偏高就突然减奶。",
+                "关注胀痛、硬块、发烧、宝宝摄入和尿布情况。",
+            ],
         }
 
     if milk_status == "normal" and growth_status == "normal":
@@ -748,6 +756,7 @@ def evaluate_plan_eligibility(
             "growth_status": growth_status,
             "message": "奶量和宝宝生长评估均正常，适合生成稳奶计划；如用户要求追奶或减奶，应先解释目前更适合维持节奏。",
             "rule_notes": ["保持当前可执行节奏。", "第3天和第7天复盘记录、宝宝表现和妈妈舒适度。"],
+            "suggestions": ["保持当前可执行节奏。", "第3天和第7天复盘记录、宝宝表现和妈妈舒适度。"],
         }
 
     if milk_status == "normal" and growth_status == "abnormal":
@@ -761,6 +770,11 @@ def evaluate_plan_eligibility(
             "growth_status": growth_status,
             "message": "奶量数据正常但宝宝生长评估异常，暂不建议直接生成追奶或减奶计划；请先核查记录，询问近期是否生病、进食下降或测量误差，并建议关注及就医评估。",
             "rule_notes": [
+                "核查身高、体重、测量时间和喂养记录是否准确。",
+                "询问近期是否发烧、腹泻、呕吐、进食变少或睡眠精神状态变化。",
+                "建议联系儿科医生或专业人员评估生长情况。",
+            ],
+            "suggestions": [
                 "核查身高、体重、测量时间和喂养记录是否准确。",
                 "询问近期是否发烧、腹泻、呕吐、进食变少或睡眠精神状态变化。",
                 "建议联系儿科医生或专业人员评估生长情况。",
@@ -779,6 +793,7 @@ def evaluate_plan_eligibility(
             "growth_status": growth_status,
             "message": "奶量和宝宝生长评估均异常，建议立即生成对应的追奶或减奶计划草稿，同时建议尽快就医或寻求 IBCLC/儿科评估。",
             "rule_notes": ["生成计划草稿后仍需专业评估。", "重点观察宝宝摄入、尿布、精神状态和妈妈乳房不适。"],
+            "suggestions": ["生成计划草稿后仍需专业评估。", "重点观察宝宝摄入、尿布、精神状态和妈妈乳房不适。"],
         }
 
     if milk_status == "low":
@@ -792,6 +807,7 @@ def evaluate_plan_eligibility(
             "growth_status": growth_status,
             "message": "奶量偏低，可生成追奶计划草稿，并提醒继续观察宝宝摄入和生长信号。",
             "rule_notes": ["优先保证计划可执行。", "连续记录3天后复盘。"],
+            "suggestions": ["优先保证计划可执行。", "连续记录3天后复盘。"],
         }
 
     return {
@@ -804,6 +820,7 @@ def evaluate_plan_eligibility(
         "growth_status": growth_status,
         "message": "当前可根据用户目标生成计划草稿。",
         "rule_notes": [],
+        "suggestions": [],
     }
 
 

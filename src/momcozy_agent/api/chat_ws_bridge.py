@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from ..agents import run_error_event
-from ..server import _runtime_inputs_from_ag_ui, runtime_from_app, stream_ag_ui_events
+
 
 router = APIRouter()
+
+
+DEFAULT_UPSTREAM_SSE_URL = "http://127.0.0.1:8768/api/ag-ui"
+SSE_BOUNDARY_LF = "\n\n"
+SSE_BOUNDARY_CRLF = "\r\n\r\n"
 
 
 @router.websocket("/api/ag-ui-ws")
@@ -34,19 +40,11 @@ async def chat_ws_bridge(websocket: WebSocket) -> None:
             return
 
         try:
-            inputs = _runtime_inputs_from_ag_ui(payload)
-        except ValueError as exc:
-            await _send_run_error(websocket, str(exc), "INVALID_REQUEST")
-            return
-
-        try:
-            runtime = runtime_from_app(websocket.app)
-            async for event in stream_ag_ui_events(payload, inputs, runtime):
-                await websocket.send_text(json.dumps(event, ensure_ascii=False))
+            await _bridge_sse_to_ws(websocket, payload)
         except WebSocketDisconnect:
             return
         except Exception as exc:
-            await _send_run_error(websocket, str(exc), type(exc).__name__)
+            await _send_run_error(websocket, f"upstream stream error: {exc}", type(exc).__name__)
     finally:
         await _safe_close(websocket)
 
@@ -75,10 +73,98 @@ def _verify_token(websocket: WebSocket) -> bool:
     return False
 
 
+async def _bridge_sse_to_ws(websocket: WebSocket, payload: dict[str, Any]) -> None:
+    try:
+        import httpx
+    except ImportError as exc:
+        raise RuntimeError(
+            "httpx is not installed; install the 'server' optional dependencies"
+        ) from exc
+
+    upstream_url = (os.getenv("MOMCOZY_CHAT_SSE_URL") or "").strip() or DEFAULT_UPSTREAM_SSE_URL
+    timeout = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            async with client.stream(
+                "POST",
+                upstream_url,
+                json=payload,
+                headers={
+                    "Accept": "text/event-stream",
+                    "Content-Type": "application/json",
+                },
+            ) as resp:
+                if resp.status_code != 200:
+                    body_preview = ""
+                    try:
+                        body_bytes = await resp.aread()
+                        body_preview = body_bytes.decode("utf-8", errors="replace")[:300]
+                    except Exception:
+                        pass
+                    await _send_run_error(
+                        websocket,
+                        f"upstream returned status {resp.status_code}: {body_preview}".strip(),
+                        f"UPSTREAM_{resp.status_code}",
+                    )
+                    return
+
+                buffer = ""
+                async for chunk in resp.aiter_text():
+                    if not chunk:
+                        continue
+                    buffer += chunk
+                    while True:
+                        boundary_idx, boundary_len = _find_boundary(buffer)
+                        if boundary_idx == -1:
+                            break
+                        raw_event = buffer[:boundary_idx]
+                        buffer = buffer[boundary_idx + boundary_len:]
+                        await _emit_event(websocket, raw_event)
+
+                if buffer.strip():
+                    await _emit_event(websocket, buffer)
+        except httpx.HTTPError as exc:
+            await _send_run_error(
+                websocket,
+                f"upstream connection failed: {exc}",
+                type(exc).__name__,
+            )
+
+
+def _find_boundary(buffer: str) -> tuple[int, int]:
+    crlf_idx = buffer.find(SSE_BOUNDARY_CRLF)
+    lf_idx = buffer.find(SSE_BOUNDARY_LF)
+    if crlf_idx == -1 and lf_idx == -1:
+        return -1, 0
+    if crlf_idx == -1:
+        return lf_idx, len(SSE_BOUNDARY_LF)
+    if lf_idx == -1:
+        return crlf_idx, len(SSE_BOUNDARY_CRLF)
+    if crlf_idx <= lf_idx:
+        return crlf_idx, len(SSE_BOUNDARY_CRLF)
+    return lf_idx, len(SSE_BOUNDARY_LF)
+
+
+async def _emit_event(websocket: WebSocket, raw_event: str) -> None:
+    data_lines: list[str] = []
+    for line in raw_event.splitlines():
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    if not data_lines:
+        return
+    data_str = "\n".join(data_lines)
+    if not data_str:
+        return
+    try:
+        obj = json.loads(data_str)
+    except json.JSONDecodeError:
+        return
+    await websocket.send_text(json.dumps(obj, ensure_ascii=False))
+
+
 async def _send_run_error(websocket: WebSocket, message: str, code: str | None = None) -> None:
     payload = run_error_event(message, code)
-    if code:
-        payload["code"] = code
     try:
         await websocket.send_text(json.dumps(payload, ensure_ascii=False))
     except Exception:

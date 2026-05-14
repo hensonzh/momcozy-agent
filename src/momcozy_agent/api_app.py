@@ -3,11 +3,26 @@ from __future__ import annotations
 import os
 
 from .config import load_project_env
-from .server import create_app as create_web_app
+from .services.paths import ensure_runtime_dirs
 
 
 def create_app():
-    return create_web_app(include_websocket_bridge=True)
+    try:
+        from fastapi import FastAPI
+    except ImportError as exc:
+        raise RuntimeError("FastAPI is not installed. Install the 'server' optional dependencies.") from exc
+
+    from .api.chat_ws_bridge import router as chat_ws_router
+    from .api.routes import router
+    from .api.vision_stream import router as vision_router
+
+    load_project_env()
+    ensure_runtime_dirs()
+    app = FastAPI(title="Momcozy Agent API")
+    app.include_router(router)
+    app.include_router(vision_router)
+    app.include_router(chat_ws_router)
+    return app
 
 
 app = create_app()

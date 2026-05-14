@@ -11,6 +11,9 @@ __pycache__/
 .venv/
 .runtime-venv/
 
+data/*.db
+logs/
+
 dist/
 build/
 *.egg-info/
