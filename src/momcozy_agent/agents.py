@@ -504,6 +504,7 @@ def _create_response(
 
     final_response = None
     reasoning_active = False
+    output_text_seen = False
     stream = client.responses.create(**request, stream=True)
     for event in stream:
         event_type = _get_item_value(event, "type")
@@ -512,10 +513,11 @@ def _create_response(
             if not reasoning_active:
                 reasoning_active = True
                 if on_reasoning_event is not None:
-                    on_reasoning_event("started", {"source_event": event_type})
+                    on_reasoning_event("started", {"source_event": event_type, "after_output_text": output_text_seen})
         if event_type == "response.output_text.delta":
             delta = _get_item_value(event, "delta")
             if isinstance(delta, str) and delta:
+                output_text_seen = True
                 on_text_delta(delta)
         elif event_type == "response.output_item.added":
             item = _get_item_value(event, "item")
@@ -525,9 +527,6 @@ def _create_response(
             item = _get_item_value(event, "item")
             if _is_function_call_item(item) and on_function_call_start is not None:
                 on_function_call_start(_stream_function_call_from_event(event, item))
-        elif _is_message_done_event(event_type, event):
-            if on_reasoning_event is not None:
-                on_reasoning_event("running", {"source_event": event_type, "after_output_text": True})
         elif _is_reasoning_done_event(event_type, event):
             if reasoning_active and on_reasoning_event is not None:
                 on_reasoning_event("completed", {"source_event": event_type})
@@ -604,13 +603,6 @@ def _is_reasoning_done_event(event_type: Any, event: object) -> bool:
         item = _get_item_value(event, "item")
         return _get_item_value(item, "type") == "reasoning"
     return False
-
-
-def _is_message_done_event(event_type: Any, event: object) -> bool:
-    if event_type != "response.output_item.done":
-        return False
-    item = _get_item_value(event, "item")
-    return _get_item_value(item, "type") == "message"
 
 
 def _user_input_item(request_context: str, user_message: str, images: list[dict[str, Any]] | None = None) -> dict[str, Any]:

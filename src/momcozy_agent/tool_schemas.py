@@ -13,6 +13,7 @@ JSON_OBJECT_STRING = {
     "type": "string",
     "description": '以字符串编码的自由 JSON 对象。不需要字段时使用 "{}"。',
 }
+ISO_DATE = {"type": "string", "description": "ISO-8601 日期，例如 2026-05-07。"}
 
 
 def _strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
@@ -48,6 +49,9 @@ def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
     """Mark a property schema as nullable for strict-mode function tools."""
 
     cloned = dict(schema)
+    enum_values = cloned.get("enum")
+    if isinstance(enum_values, list) and None not in enum_values:
+        cloned["enum"] = [*enum_values, None]
     type_value = cloned.get("type")
     if isinstance(type_value, str):
         if type_value != "null":
@@ -212,6 +216,268 @@ FUNCTION_TOOLS: dict[ToolName, FunctionToolDefinition] = {
             "urgency": {"type": "string", "enum": ["normal", "high", "safety"]},
             "user_emotion": _nullable({"type": "string", "description": "简短描述观察到的用户情绪，例如沮丧、焦虑或生气。"}),
             "attachments_note": _nullable({"type": "string", "description": "说明已提供或仍需要的相关图片/视频附件。"}),
+        },
+    ),
+    "milk_context_get": _function_tool(
+        "milk_context_get",
+        "GET 只读工具：读取当前用户的奶量管理上下文，包括用户/宝宝资料和最新计划元数据。只返回结构化事实；最终解释由模型完成。user_id 由应用运行时注入，模型不要提供。",
+        {},
+    ),
+    "milk_assessment_evaluate": _function_tool(
+        "milk_assessment_evaluate",
+        "EVALUATE 只读工具：基于固定参考数据和记录聚合，返回近期奶量状态、缺失数据和规则命中。不是诊断，也不生成最终用户话术。",
+        {
+            "as_of_time": _nullable({"type": "string", "description": "可选 ISO-8601 评估时间；不确定时传 null。"}),
+            "window_days": {"type": "integer", "description": "回看天数。主动追奶/减奶/稳奶通常用 1；全面评估通常用 7。"},
+            "include_today": {"type": "boolean", "description": "是否包含当前日未完整记录。通常评估完整日时传 false。"},
+        },
+    ),
+    "infant_growth_evaluate": _function_tool(
+        "infant_growth_evaluate",
+        "EVALUATE 只读工具：基于宝宝档案、生长记录和固定参考数据返回生长趋势规则结果。不是诊断；仅在用户提到身高、体重、增长或摄入是否足够时使用。",
+        {
+            "infant_id": _nullable({"type": "integer", "description": "可选宝宝 ID；不确定时传 null。"}),
+            "as_of_time": _nullable({"type": "string", "description": "可选 ISO-8601 评估时间；不确定时传 null。"}),
+        },
+    ),
+    "milk_plan_preview": _function_tool(
+        "milk_plan_preview",
+        "PREVIEW 候选方案工具：按确定性规则生成追奶、稳奶或减奶计划草稿，不写数据库。返回候选计划结构和规则依据；保存前必须获得用户确认。",
+        {
+            "plan_type": {"type": "string", "enum": ["increase_milk", "maintain_milk", "decrease_milk"]},
+            "plan_days": _nullable({"type": "integer"}),
+            "custom_target_daily_ml": _nullable({"type": "number"}),
+            "as_of_time": _nullable({"type": "string"}),
+            "options": _nullable(
+                {
+                    **JSON_OBJECT_STRING,
+                    "description": "字符串编码 JSON。可包含 prepared_assessment、prepared_growth_assessment、observed_persistent_abnormal 或 medical_confirmation_confirmed。",
+                }
+            ),
+        },
+    ),
+    "milk_plan_apply": _function_tool(
+        "milk_plan_apply",
+        "APPLY 写入工具：保存用户已确认的奶量计划，并展开写入 calendar。有副作用；只有用户明确确认后才调用。",
+        {
+            "confirmed_plan": JSON_OBJECT_STRING,
+            "idempotency_key": {"type": "string"},
+        },
+    ),
+    "milk_plan_list": _function_tool(
+        "milk_plan_list",
+        "GET 只读工具：列出当前用户已保存的奶量计划。只返回结构化记录，不生成计划建议。",
+        {
+            "plan_type": _nullable({"type": "string", "enum": ["increase_milk", "maintain_milk", "decrease_milk"]}),
+            "limit": {"type": "integer"},
+        },
+    ),
+    "milk_plan_get": _function_tool(
+        "milk_plan_get",
+        "GET 只读工具：读取一个已保存奶量计划；plan_id 为 null 时读取最新计划。只返回结构化记录。",
+        {"plan_id": _nullable({"type": "integer"})},
+    ),
+    "milk_plan_delete": _function_tool(
+        "milk_plan_delete",
+        "DELETE 写入工具：删除已保存奶量计划，并可删除其生成的 calendar 条目。有副作用；只有用户明确确认后才调用。",
+        {
+            "plan_id": {"type": "integer"},
+            "idempotency_key": {"type": "string"},
+            "delete_calendar_items": {"type": "boolean"},
+        },
+    ),
+    "milk_plan_update": _function_tool(
+        "milk_plan_update",
+        "UPDATE 写入工具：更新已保存奶量计划的元数据或替换计划 payload。有副作用；只有用户明确确认后才调用。",
+        {
+            "plan_id": {"type": "integer"},
+            "patch": JSON_OBJECT_STRING,
+            "idempotency_key": {"type": "string"},
+            "reexpand_calendar": {"type": "boolean"},
+        },
+    ),
+    "milk_plan_regenerate_preview": _function_tool(
+        "milk_plan_regenerate_preview",
+        "PREVIEW 候选方案工具：基于已有计划或指定计划类型重新生成计划草稿，不写数据库。返回候选计划结构；保存或更新前必须获得用户确认。",
+        {
+            "plan_id": _nullable({"type": "integer"}),
+            "plan_type": _nullable({"type": "string", "enum": ["increase_milk", "maintain_milk", "decrease_milk"]}),
+            "plan_days": _nullable({"type": "integer"}),
+            "custom_target_daily_ml": _nullable({"type": "number"}),
+            "as_of_time": _nullable({"type": "string"}),
+            "options": _nullable(JSON_OBJECT_STRING),
+        },
+    ),
+    "milk_plan_target_validate": _function_tool(
+        "milk_plan_target_validate",
+        "VALIDATE 只读工具：校验用户主动提出的追奶、稳奶或减奶目标是否符合当前评估与参考边界。返回 valid/violations/warnings，不生成最终建议。",
+        {
+            "plan_type": {"type": "string", "enum": ["increase_milk", "maintain_milk", "decrease_milk"]},
+            "target_daily_ml": _nullable({"type": "number"}),
+            "delta_ml": _nullable({"type": "number", "description": "未提供 target_daily_ml 时使用的每日增加或减少量。"}),
+            "as_of_time": _nullable({"type": "string"}),
+        },
+    ),
+    "milk_plan_validate": _function_tool(
+        "milk_plan_validate",
+        "VALIDATE 只读工具：在保存或更新前校验完整奶量计划草稿，包括追奶、减奶、稳奶边界。返回 valid/violations/warnings。",
+        {"plan": JSON_OBJECT_STRING},
+    ),
+    "milk_records_range_get": _function_tool(
+        "milk_records_range_get",
+        "GET 只读工具：读取任意时间段内的吸奶、亲喂、母乳瓶喂和奶粉瓶喂记录，返回结构化原始记录和聚合摘要。亲喂奶量如出现估算会明确标记为 estimated。",
+        {
+            "start_at": {"type": "string", "description": "起始日期或日期时间，例如 2026-05-01 或 2026-05-01 08:00。"},
+            "end_at": {"type": "string", "description": "结束日期或日期时间；日期会按整天处理并作为 exclusive end 的下一日 00:00。"},
+            "record_scope": {
+                "type": "string",
+                "enum": ["all", "milk_output", "feeding", "pumping", "nursing", "breastmilk_bottle", "formula_bottle"],
+                "description": "读取范围：母乳产出用 milk_output；全部记录用 all。",
+            },
+            "include_raw_records": {"type": "boolean", "description": "是否返回原始记录列表；只要摘要时传 false。"},
+            "summary_granularity": {"type": "string", "enum": ["none", "daily"], "description": "是否返回每日聚合。"},
+            "limit": {"type": "integer", "description": "每类原始记录最多返回数量，建议 50-200。"},
+        },
+    ),
+    "milk_record_create": _function_tool(
+        "milk_record_create",
+        "CREATE 写入工具：新增一条真实奶量记录，可新增吸奶、亲喂、母乳瓶喂或奶粉瓶喂。有副作用；只有用户明确确认后才调用。",
+        {
+            "record_kind": {"type": "string", "enum": ["pumping", "nursing", "breastmilk_bottle", "formula_bottle"]},
+            "occurred_at": {"type": "string", "description": "记录发生时间，例如 2026-05-14 09:30。"},
+            "amount_ml": _nullable({"type": "number", "description": "吸奶或瓶喂奶量 ml；亲喂不确定时传 null。"}),
+            "duration_minutes": _nullable({"type": "integer", "description": "吸奶或亲喂持续分钟数；不确定时传 null。"}),
+            "infant_id": _nullable({"type": "integer", "description": "喂养记录对应宝宝 ID；不确定时传 null。"}),
+            "title": _nullable({"type": "string", "description": "可选标题或备注；无则传 null。"}),
+            "idempotency_key": {"type": "string"},
+        },
+    ),
+    "milk_record_update": _function_tool(
+        "milk_record_update",
+        "UPDATE 写入工具：修改一条真实奶量记录。record_id 来自 milk_records_range_get；patch 可包含 occurred_at、amount_ml、duration_minutes、record_kind、infant_id、title。有副作用；只有用户明确确认后才调用。",
+        {
+            "record_kind": {"type": "string", "enum": ["pumping", "nursing", "breastmilk_bottle", "formula_bottle"]},
+            "record_id": {"type": "integer"},
+            "patch": JSON_OBJECT_STRING,
+            "idempotency_key": {"type": "string"},
+        },
+    ),
+    "milk_record_delete": _function_tool(
+        "milk_record_delete",
+        "DELETE 写入工具：删除一条真实奶量记录。record_id 来自 milk_records_range_get。有副作用；只有用户明确确认后才调用。",
+        {
+            "record_kind": {"type": "string", "enum": ["pumping", "nursing", "breastmilk_bottle", "formula_bottle"]},
+            "record_id": {"type": "integer"},
+            "idempotency_key": {"type": "string"},
+        },
+    ),
+    "milk_today_overview_get": _function_tool(
+        "milk_today_overview_get",
+        "GET 只读工具：读取今日奶量管理 calendar 概览，包括总任务数、完成数、待完成数和任务列表。只返回结构化事实。",
+        {
+            "target_date": _nullable(ISO_DATE),
+            "plan_id": _nullable({"type": "integer"}),
+        },
+    ),
+    "milk_today_summary_get": _function_tool(
+        "milk_today_summary_get",
+        "GET 只读工具：读取今日日结聚合，包括 calendar、吸奶和喂养摘要。只返回结构化统计；鼓励/安抚话术由模型生成。",
+        {
+            "target_date": _nullable(ISO_DATE),
+            "plan_id": _nullable({"type": "integer"}),
+        },
+    ),
+    "milk_today_tasks_shift": _function_tool(
+        "milk_today_tasks_shift",
+        "UPDATE 写入工具：顺延今日 calendar 任务。有副作用；只有用户明确确认后才调用。",
+        {
+            "target_date": _nullable(ISO_DATE),
+            "shift_minutes": {"type": "integer"},
+            "from_time": _nullable({"type": "string", "description": "只顺延此时间之后的任务，例如 14:00；不限定时传 null。"}),
+            "plan_id": _nullable({"type": "integer"}),
+            "idempotency_key": {"type": "string"},
+        },
+    ),
+    "milk_today_tasks_confirm": _function_tool(
+        "milk_today_tasks_confirm",
+        "UPDATE 写入受限工具：确认今日吸奶任务完成。当前默认由 handler 阻止 LLM 侧完成状态写入，并提示用户回主界面日历操作。",
+        {
+            "target_date": _nullable(ISO_DATE),
+            "plan_id": _nullable({"type": "integer"}),
+            "idempotency_key": {"type": "string"},
+        },
+    ),
+    "milk_calendar_day_get": _function_tool(
+        "milk_calendar_day_get",
+        "GET 只读工具：读取某一天奶量管理 calendar 条目。只返回结构化日程事实。",
+        {
+            "target_date": ISO_DATE,
+            "plan_id": _nullable({"type": "integer"}),
+            "item_type": _nullable({"type": "string", "enum": ["吸奶", "亲喂", "自定义"]}),
+        },
+    ),
+    "milk_calendar_range_get": _function_tool(
+        "milk_calendar_range_get",
+        "GET 只读工具：读取任意日期或时间范围内的奶量管理 calendar/计划执行情况，返回完成率、每日统计和可选条目列表。",
+        {
+            "start_at": {"type": "string", "description": "起始日期或日期时间，例如 2026-05-14 或 2026-05-14 08:00。"},
+            "end_at": {"type": "string", "description": "结束日期或日期时间；日期会按整天处理并作为 exclusive end 的下一日 00:00。"},
+            "plan_id": _nullable({"type": "integer"}),
+            "item_type": _nullable({"type": "string", "enum": ["吸奶", "亲喂", "自定义"]}),
+            "include_items": {"type": "boolean", "description": "是否返回条目列表；只要统计时传 false。"},
+            "limit": {"type": "integer", "description": "最多返回条目数量，建议 50-200。"},
+        },
+    ),
+    "milk_calendar_adjustment_preview": _function_tool(
+        "milk_calendar_adjustment_preview",
+        "PREVIEW 候选变更工具：预览新增事项导致的 calendar 变更，不写数据库。返回冲突、候选调整和 proposal；apply 前必须获得用户确认。",
+        {
+            "target_date": ISO_DATE,
+            "event_start_time": {"type": "string", "description": "开始时间，例如 09:00 或完整 ISO datetime。"},
+            "event_end_time": _nullable({"type": "string", "description": "结束时间，例如 09:30；如提供 duration_minutes 可传 null。"}),
+            "duration_minutes": _nullable({"type": "integer"}),
+            "content": {"type": "string"},
+            "item_type": _nullable({"type": "string", "enum": ["吸奶", "亲喂", "自定义"], "description": "吃饭、外出、会议、接孩子等使用 自定义。"}),
+            "plan_id": _nullable({"type": "integer"}),
+        },
+    ),
+    "milk_calendar_adjustment_apply": _function_tool(
+        "milk_calendar_adjustment_apply",
+        "APPLY 写入工具：应用用户已确认的 calendar adjustment proposal。proposal 必须包含新增事项和相关任务调整；只有用户明确确认后才调用。",
+        {
+            "target_date": ISO_DATE,
+            "proposal": JSON_OBJECT_STRING,
+            "idempotency_key": {"type": "string"},
+        },
+    ),
+    "milk_calendar_range_update": _function_tool(
+        "milk_calendar_range_update",
+        "UPDATE/DELETE 写入工具：批量修改任意日期或时间范围内的计划条目。operation=shift 时 patch 传 {\"shift_minutes\":30}；operation=patch_items 时先读取范围再传 {\"updates\":[{\"item_id\":1,\"start_time\":\"09:00\"}]}；operation=delete 删除范围内匹配条目。有副作用；只有用户明确确认后才调用。",
+        {
+            "start_at": {"type": "string"},
+            "end_at": {"type": "string"},
+            "operation": {"type": "string", "enum": ["shift", "delete", "patch_items"]},
+            "patch": JSON_OBJECT_STRING,
+            "plan_id": _nullable({"type": "integer"}),
+            "item_type": _nullable({"type": "string", "enum": ["吸奶", "亲喂", "自定义"]}),
+            "idempotency_key": {"type": "string"},
+        },
+    ),
+    "milk_calendar_item_update": _function_tool(
+        "milk_calendar_item_update",
+        "UPDATE 写入受限工具：更新 calendar 条目的时间、内容或类型。有副作用；只有用户明确确认后才调用。finish 完成状态默认拒绝并提示回主界面日历操作。",
+        {
+            "item_id": {"type": "integer"},
+            "patch": JSON_OBJECT_STRING,
+            "idempotency_key": {"type": "string"},
+        },
+    ),
+    "milk_calendar_item_delete": _function_tool(
+        "milk_calendar_item_delete",
+        "DELETE 写入工具：删除一个 calendar 条目。有副作用；只有目标条目明确且用户确认后才调用。",
+        {
+            "item_id": {"type": "integer"},
+            "idempotency_key": {"type": "string"},
         },
     ),
 }

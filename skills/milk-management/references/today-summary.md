@@ -6,6 +6,8 @@
 
 调用 `milk_today_overview_get` 读取当天 calendar，返回任务总数、已完成数、未完成数和任务列表。
 
+如果用户问的不是今天，而是“过去几天/本周/未来几天”的计划执行情况，调用 `milk_calendar_range_get`，不要把多日问题拆成多次今日查询。
+
 ## 今日日结
 
 调用 `milk_today_summary_get` 汇总当天 calendar 完成情况。
@@ -20,7 +22,7 @@
 - **完成率**：{completion_rate}%
 - **吸奶计划任务**：{pump_task_count}项
 
-{encouragement}
+最后用 1 句自然鼓励收尾。鼓励话术由你根据完成率和记录情况生成，不来自工具字段。
 ```
 
 字段来源：
@@ -30,7 +32,6 @@
 - `pending_count`：`calendar_summary.pending_count`
 - `completion_rate`：`calendar_summary.completion_rate`
 - `pump_task_count`：`calendar_summary.pump_task_count`
-- `encouragement`：工具返回的 `encouragement`
 
 ## 今日任务操作
 
@@ -38,6 +39,7 @@
 - 删除任务：调用 `milk_calendar_item_delete`
 - 新增事项并调整冲突：先 `milk_calendar_adjustment_preview`，确认后 `milk_calendar_adjustment_apply`
 - 顺延后续任务：调用 `milk_today_tasks_shift`
+- 顺延或修改一段时间内的多项任务：先 `milk_calendar_range_get`，确认后 `milk_calendar_range_update`
 - 确认全部完成：暂时不要调用工具，直接温柔回复：“好的，这个需要您回到主界面的日历中操作完成，并记录具体时间和奶量哦。这样可以帮助我们更准确地评估您的泌乳状态。”
 
 ## 原则

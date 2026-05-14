@@ -29,14 +29,19 @@ def get_knowledge_root() -> Path:
     return Path(configured).expanduser().resolve() if configured else KNOWLEDGE_ROOT
 
 
-def connect(db_path: str | Path | None = None) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path or get_db_path()))
+def connect(db_path: str | Path | None = None, *, create: bool = True) -> sqlite3.Connection:
+    path = Path(db_path or get_db_path())
+    if not create and not path.exists():
+        raise FileNotFoundError(path)
+    conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     return conn
 
 
 @contextmanager
 def transaction(db_path: str | Path | None = None) -> Iterator[sqlite3.Connection]:
+    if db_path is None:
+        _ensure_default_db_schema()
     conn = connect(db_path)
     try:
         yield conn
@@ -61,15 +66,29 @@ def rows_to_dicts(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:
 
 
 def fetch_one(sql: str, params: Iterable[Any] = (), *, db_path: str | Path | None = None) -> dict[str, Any] | None:
-    with connect(db_path) as conn:
-        row = conn.execute(sql, tuple(params)).fetchone()
-        return row_to_dict(row) if row is not None else None
+    try:
+        with connect(db_path, create=False) as conn:
+            row = conn.execute(sql, tuple(params)).fetchone()
+            return row_to_dict(row) if row is not None else None
+    except FileNotFoundError:
+        return None
+    except sqlite3.OperationalError as exc:
+        if _is_missing_table_error(exc):
+            return None
+        raise
 
 
 def fetch_all(sql: str, params: Iterable[Any] = (), *, db_path: str | Path | None = None) -> list[dict[str, Any]]:
-    with connect(db_path) as conn:
-        rows = conn.execute(sql, tuple(params)).fetchall()
-        return rows_to_dicts(rows)
+    try:
+        with connect(db_path, create=False) as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            return rows_to_dicts(rows)
+    except FileNotFoundError:
+        return []
+    except sqlite3.OperationalError as exc:
+        if _is_missing_table_error(exc):
+            return []
+        raise
 
 
 def execute(sql: str, params: Iterable[Any] = (), *, db_path: str | Path | None = None) -> int:
@@ -77,3 +96,12 @@ def execute(sql: str, params: Iterable[Any] = (), *, db_path: str | Path | None 
         cursor = conn.execute(sql, tuple(params))
         return int(cursor.rowcount or 0)
 
+
+def _ensure_default_db_schema() -> None:
+    from .. import data_store
+
+    data_store.init_db()
+
+
+def _is_missing_table_error(exc: sqlite3.OperationalError) -> bool:
+    return "no such table" in str(exc).lower()

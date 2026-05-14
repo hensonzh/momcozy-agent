@@ -366,7 +366,6 @@ data: {"type":"TEXT_MESSAGE_CONTENT", "delta":"..."}
 
 前端行为：
 
-- 清理文本 idle thinking timer。
 - 视为本段 assistant text 输出结束。
 
 ### 5.3 Thinking 事件
@@ -397,8 +396,8 @@ Thinking 通过 `CUSTOM` 事件返回：
 
 - `started` / `running`：展示 `Thinking`。
 - 如果 `metadata.after_output_text === true`：展示 `Preparing next step`。
-- 目前前端不会在 completed 时立刻移除 Thinking，而是等下一条可见事件替换，以减少空白延迟感。
-- 如果模型没有立刻发送 reasoning 事件，前端会在 `RUN_STARTED` 或 `agent.status` 进入 `requesting_model` 时先展示 `Thinking` 作为兜底。
+- `completed` / `failed`：立即移除 Thinking。
+- 前端只在后端收到真实 Responses reasoning stream 事件时展示 Thinking；`RUN_STARTED`、`requesting_model` 和普通文本 idle 不再兜底显示 Thinking。
 
 ### 5.4 Agent 状态事件
 
@@ -438,7 +437,7 @@ Agent 状态会以两种事件形式发送：
 }
 ```
 
-前端主要用它们更新 meta。`requesting_model` 也会触发首轮 `Thinking` 兜底，真正可见的 work panel 主要来自 tool call 事件。
+前端主要用它们更新 meta。`requesting_model` 不再触发 `Thinking` 兜底；真正可见的 work panel 主要来自真实 reasoning 事件和 tool call 事件。
 
 ### 5.5 Tool call 事件
 
@@ -517,7 +516,7 @@ Agent 状态会以两种事件形式发送：
 
 - 如果 `responses:response.output_text.delta` 本身很晚，慢点主要在 Responses API 首包/模型侧。
 - 如果 `sse:TEXT_MESSAGE_CONTENT` 很早但浏览器很晚才显示，再排查浏览器、代理或本地网络。
-- 如果文本 delta 很早、`response.output_item.done` 后到 `response.completed` 很晚，前端较久显示 `Preparing next step` 是 stream 尾部完成事件较晚，不代表文本没有到达。
+- 如果文本 delta 很早、`response.output_item.done` 后到 `response.completed` 很晚，前端不会仅因尾部完成事件较晚显示 `Preparing next step`；只有真实 reasoning 事件才会显示 Thinking/Preparing。
 
 ## 6. Tool result 安全响应体
 

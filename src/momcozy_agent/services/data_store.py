@@ -35,8 +35,6 @@ def init_db() -> None:
                 user_id TEXT PRIMARY KEY,
                 user_nickname TEXT,
                 delivery_date TEXT,
-                lactation_advice TEXT,
-                feeding_advice TEXT,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -187,8 +185,6 @@ def init_db() -> None:
             );
             """
         )
-        _ensure_column(conn, "user_profile", "lactation_advice", "TEXT")
-        _ensure_column(conn, "user_profile", "feeding_advice", "TEXT")
         _ensure_calendar_schema(conn)
         _ensure_column(conn, "feeding_log", "feed_action", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "feeding_log", "feeding_title", "TEXT")
@@ -304,80 +300,6 @@ def get_mom_baby_info(user_id: str) -> dict[str, Any] | None:
     return {
         "delivery_date": delivery_date,
         "infant_birth_date": str(baby_data.get("birth_date") or ""),
-        "lactation_advice": user_data.get("lactation_advice"),
-        "feeding_advice": user_data.get("feeding_advice"),
-    }
-
-
-def update_user_profile_advice(*, user_id: str, lactation_advice: str, feeding_advice: str) -> bool:
-    init_db()
-    uid = str(user_id or "").strip()
-    if not uid:
-        return False
-    with _connect() as conn:
-        cursor = conn.execute(
-            """
-            UPDATE user_profile
-            SET lactation_advice = ?,
-                feeding_advice = ?,
-                updated_at = ?
-            WHERE user_id = ?
-            """,
-            (str(lactation_advice or ""), str(feeding_advice or ""), _now(), uid),
-        )
-        return cursor.rowcount > 0
-
-
-def get_status_advice_context(*, user_id: str, days: int = 7) -> dict[str, Any] | None:
-    init_db()
-    uid = str(user_id or "").strip()
-    if not uid:
-        return None
-    lookback_days = max(1, int(days or 7))
-    end_dt = datetime.now()
-    start_dt = end_dt - timedelta(days=lookback_days - 1)
-    start_at = f"{start_dt.date().isoformat()} 00:00:00"
-    end_at = f"{end_dt.date().isoformat()} 23:59:59"
-
-    with _connect() as conn:
-        user = conn.execute("SELECT * FROM user_profile WHERE user_id = ?", (uid,)).fetchone()
-        baby = conn.execute(
-            "SELECT * FROM infant_profile WHERE user_id = ? ORDER BY infant_id LIMIT 1",
-            (uid,),
-        ).fetchone()
-        if not user and not baby:
-            return None
-        pumping_rows = conn.execute(
-            """
-            SELECT pumping_id, user_id, pump_start_time, pump_end_time, pump_milk_volum,
-                   pump_type, pump_milk_duration, pump_source, pump_title, created_at
-            FROM pumping_log
-            WHERE user_id = ? AND pump_start_time >= ? AND pump_start_time <= ?
-            ORDER BY pump_start_time ASC, pumping_id ASC
-            """,
-            (uid, start_at, end_at),
-        ).fetchall()
-        feeding_rows = conn.execute(
-            """
-            SELECT feeding_id, user_id, infant_id, feed_time, feed_milk_volum,
-                   feed_type, feed_action, feeding_title, created_at
-            FROM feeding_log
-            WHERE user_id = ? AND feed_time >= ? AND feed_time <= ?
-            ORDER BY feed_time ASC, feeding_id ASC
-            """,
-            (uid, start_at, end_at),
-        ).fetchall()
-
-    return {
-        "user_profile": _row_dict(user) if user else {},
-        "infant_profile": _row_dict(baby) if baby else {},
-        "window": {
-            "days": lookback_days,
-            "start_at": start_at,
-            "end_at": end_at,
-        },
-        "pumping_records": [_row_dict(row) for row in pumping_rows],
-        "feeding_records": [_row_dict(row) for row in feeding_rows],
     }
 
 
@@ -1434,6 +1356,3 @@ def _now() -> str:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-init_db()

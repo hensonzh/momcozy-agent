@@ -75,7 +75,6 @@ def get_today_summary(
             "pumping_summary": pumping_summary,
             "feeding_summary": feeding_summary,
             "items": items,
-            "encouragement": _encouragement(calendar_summary, pumping_summary, feeding_summary),
         },
     )
 
@@ -291,22 +290,6 @@ def _feeding_summary(user_id: str, target_date: str) -> dict[str, Any]:
         "total_bottle_ml": round(total_bottle, 1),
         "type_counts": type_counts,
     }
-
-
-def _encouragement(
-    calendar_summary: dict[str, Any],
-    pumping_summary: dict[str, Any],
-    feeding_summary: dict[str, Any],
-) -> str:
-    rate = to_int(calendar_summary.get("completion_rate"), 0)
-    has_record = pumping_summary.get("pumping_count") or feeding_summary.get("feeding_count")
-    if rate >= 90:
-        return "今天执行得很稳，继续保持这个节奏就很好。"
-    if rate >= 50:
-        return "今天已经完成了不少安排，按身体状态稳稳推进就好。"
-    if has_record:
-        return "今天虽然节奏还在调整，但已经有记录和行动，后面可以继续一点点补齐。"
-    return "今天先把节奏稳住，能完成一小步也很有价值。"
 
 
 def _target_date(value: str | None) -> str:

@@ -170,6 +170,7 @@ def _summarize_feeding(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _evaluate_milk_normality(
+    profile: dict[str, Any],
     pumping_logs: list[dict[str, Any]],
     feeding_logs: list[dict[str, Any]],
     as_of_dt: datetime,
@@ -188,8 +189,17 @@ def _evaluate_milk_normality(
     end_day = as_of_dt.date() if include_today else as_of_dt.date() - timedelta(days=1)
     start_day = end_day - timedelta(days=max(window_days, 1) - 1)
     aggregate = _aggregate_days(pumping_logs, feeding_logs, start_day=start_day, end_day=end_day)
-    yield_points = _build_yield_points(str(_yield_reference_path()))
-    freq_points = _build_frequency_points(str(_frequency_reference_path()))
+    try:
+        yield_points = _build_yield_points(str(_yield_reference_path()))
+        freq_points = _build_frequency_points(str(_frequency_reference_path()))
+    except Exception as exc:
+        return {
+            "ok": False,
+            "overall_status": "insufficient_data",
+            "summary": "missing milk reference data",
+            "days": [],
+            "missing_reference_data": type(exc).__name__,
+        }
 
     per_day = []
     day_ptr = start_day

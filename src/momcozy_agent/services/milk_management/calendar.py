@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from .. import data_store
@@ -70,6 +70,54 @@ def get_calendar_day(
                 "completed_count": completed,
                 "pending_count": max(len(items) - completed, 0),
             },
+        },
+    )
+
+
+def get_calendar_range(
+    *,
+    user_id: str,
+    start_at: str,
+    end_at: str,
+    plan_id: int | None = None,
+    item_type: str | None = None,
+    include_items: bool = True,
+    limit: int = 200,
+) -> ServiceResult:
+    uid = str(user_id or "").strip()
+    if not uid:
+        return error_result("missing_user_id", "缺少 user_id，无法读取计划执行情况。")
+    window = _range_window(start_at, end_at)
+    if window.get("error"):
+        return error_result("invalid_time_range", window["error"])
+    if item_type and item_type not in VALID_CALENDAR_TYPES:
+        return error_result("invalid_calendar_type", f"Unsupported calendar type: {item_type}")
+
+    rows = _fetch_calendar_range_rows(
+        user_id=uid,
+        start_at=_db_time(window["start_dt"]),
+        end_at=_db_time(window["end_dt"]),
+        plan_id=plan_id,
+        item_type=item_type,
+    )
+    items = [_normalize_calendar_row(row) for row in rows]
+    raw_limit = min(max(to_int(limit, 200), 1), 500)
+    return ok_result(
+        "calendar_range_loaded",
+        f"已读取 {window['start_text']} 到 {window['end_text']} 的计划执行情况。",
+        {
+            "user_id": uid,
+            "window": {
+                "start_at": _db_time(window["start_dt"]),
+                "end_at": _db_time(window["end_dt"]),
+                "end_exclusive": True,
+            },
+            "plan_id": plan_id,
+            "item_type": item_type,
+            "summary": _calendar_range_summary(items),
+            "items": items[:raw_limit] if include_items else [],
+            "item_count": len(items),
+            "raw_item_limit": raw_limit,
         },
     )
 
@@ -225,6 +273,83 @@ def apply_calendar_adjustment(
     )
 
 
+def update_calendar_range(
+    *,
+    user_id: str,
+    start_at: str,
+    end_at: str,
+    operation: str,
+    patch: dict[str, Any] | str,
+    plan_id: int | None = None,
+    item_type: str | None = None,
+    idempotency_key: str,
+) -> ServiceResult:
+    _ = idempotency_key
+    uid = str(user_id or "").strip()
+    if not uid:
+        return error_result("missing_user_id", "缺少 user_id，无法修改计划。")
+    if not norm_text(idempotency_key):
+        return error_result("missing_idempotency_key", "缺少 idempotency_key。")
+    window = _range_window(start_at, end_at)
+    if window.get("error"):
+        return error_result("invalid_time_range", window["error"])
+    if item_type and item_type not in VALID_CALENDAR_TYPES:
+        return error_result("invalid_calendar_type", f"Unsupported calendar type: {item_type}")
+    op = norm_text(operation)
+    if op not in {"shift", "delete", "patch_items"}:
+        return error_result("invalid_operation", f"Unsupported calendar range operation: {operation}")
+    patch_data = _parse_json_object(patch)
+    if op != "delete" and not patch_data:
+        return error_result("empty_patch", "没有可执行的计划修改。")
+
+    start_text = _db_time(window["start_dt"])
+    end_text = _db_time(window["end_dt"])
+    with transaction() as conn:
+        rows = _select_calendar_range_rows(
+            conn,
+            user_id=uid,
+            start_at=start_text,
+            end_at=end_text,
+            plan_id=plan_id,
+            item_type=item_type,
+        )
+        if op == "shift":
+            changed = _shift_calendar_rows(conn, uid, rows, patch_data)
+            status = "calendar_range_shifted"
+            summary = f"已顺延 {len(changed)} 个计划条目。"
+            data: dict[str, Any] = {"changed_items": changed, "updated_count": len(changed)}
+        elif op == "delete":
+            item_ids = [int(row["item_id"] or 0) for row in rows]
+            deleted_count = 0
+            if item_ids:
+                placeholders = ",".join("?" for _ in item_ids)
+                cursor = conn.execute(
+                    f"DELETE FROM calendar WHERE user_id = ? AND item_id IN ({placeholders})",
+                    [uid, *item_ids],
+                )
+                deleted_count = int(cursor.rowcount or 0)
+            status = "calendar_range_deleted"
+            summary = f"已删除 {deleted_count} 个计划条目。"
+            data = {"deleted_count": deleted_count, "item_ids": item_ids}
+        else:
+            changed = _patch_calendar_rows(conn, uid, rows, patch_data)
+            status = "calendar_range_patched"
+            summary = f"已更新 {len(changed)} 个计划条目。"
+            data = {"changed_items": changed, "updated_count": len(changed)}
+
+    refreshed = get_calendar_range(
+        user_id=uid,
+        start_at=start_text,
+        end_at=end_text,
+        plan_id=plan_id,
+        item_type=item_type,
+        include_items=True,
+        limit=200,
+    )
+    data["calendar"] = refreshed.get("data") if isinstance(refreshed.get("data"), dict) else {}
+    return ok_result(status, summary, data)
+
+
 def update_calendar_item(
     *,
     user_id: str,
@@ -299,6 +424,207 @@ def delete_calendar_item(*, user_id: str, item_id: int) -> ServiceResult:
     if changed <= 0:
         return error_result("calendar_item_not_found", "Calendar item was not found.")
     return ok_result("calendar_item_deleted", data={"user_id": uid, "item_id": int(item_id)})
+
+
+def _fetch_calendar_range_rows(
+    *,
+    user_id: str,
+    start_at: str,
+    end_at: str,
+    plan_id: int | None,
+    item_type: str | None,
+) -> list[dict[str, Any]]:
+    params: list[Any] = [user_id, start_at, end_at]
+    clauses = [
+        "user_id = ?",
+        "COALESCE(start_time, date || ' 00:00:00') >= ?",
+        "COALESCE(start_time, date || ' 00:00:00') < ?",
+    ]
+    if plan_id is not None:
+        clauses.append("COALESCE(plan_id, 0) = ?")
+        params.append(int(plan_id))
+    if item_type:
+        clauses.append("type = ?")
+        params.append(item_type)
+    return fetch_all(
+        f"""
+        SELECT item_id, user_id, plan_id, date, task_id, start_time, end_time,
+               content, type, source, is_milk_pump, finish, created_at, modified_at
+        FROM calendar
+        WHERE {" AND ".join(clauses)}
+        ORDER BY date ASC, COALESCE(start_time, ''), COALESCE(task_id, item_id), item_id
+        """,
+        params,
+    )
+
+
+def _select_calendar_range_rows(
+    conn: Any,
+    *,
+    user_id: str,
+    start_at: str,
+    end_at: str,
+    plan_id: int | None,
+    item_type: str | None,
+) -> list[Any]:
+    params: list[Any] = [user_id, start_at, end_at]
+    clauses = [
+        "user_id = ?",
+        "COALESCE(start_time, date || ' 00:00:00') >= ?",
+        "COALESCE(start_time, date || ' 00:00:00') < ?",
+    ]
+    if plan_id is not None:
+        clauses.append("COALESCE(plan_id, 0) = ?")
+        params.append(int(plan_id))
+    if item_type:
+        clauses.append("type = ?")
+        params.append(item_type)
+    return conn.execute(
+        f"""
+        SELECT item_id, user_id, plan_id, date, task_id, start_time, end_time,
+               content, type, source, is_milk_pump, finish, created_at, modified_at
+        FROM calendar
+        WHERE {" AND ".join(clauses)}
+        ORDER BY date ASC, COALESCE(start_time, ''), COALESCE(task_id, item_id), item_id
+        """,
+        params,
+    ).fetchall()
+
+
+def _calendar_range_summary(items: list[CalendarItem]) -> dict[str, Any]:
+    completed = len([item for item in items if item.get("finish")])
+    by_date: dict[str, dict[str, Any]] = {}
+    type_counts: dict[str, int] = {}
+    for item in items:
+        item_type = norm_text(item.get("type")) or CALENDAR_TYPE_CUSTOM
+        type_counts[item_type] = type_counts.get(item_type, 0) + 1
+        date = norm_text(item.get("date"))
+        if not date:
+            continue
+        slot = by_date.setdefault(date, {"date": date, "total_count": 0, "completed_count": 0, "pending_count": 0, "type_counts": {}})
+        slot["total_count"] += 1
+        if item.get("finish"):
+            slot["completed_count"] += 1
+        slot["type_counts"][item_type] = slot["type_counts"].get(item_type, 0) + 1
+    for slot in by_date.values():
+        slot["pending_count"] = max(slot["total_count"] - slot["completed_count"], 0)
+    total = len(items)
+    return {
+        "total_count": total,
+        "completed_count": completed,
+        "pending_count": max(total - completed, 0),
+        "completion_rate": int((completed * 100) / total) if total > 0 else 0,
+        "type_counts": type_counts,
+        "daily": [by_date[key] for key in sorted(by_date)],
+    }
+
+
+def _shift_calendar_rows(conn: Any, user_id: str, rows: list[Any], patch_data: dict[str, Any]) -> list[dict[str, Any]]:
+    minutes = to_int(patch_data.get("shift_minutes"), 0)
+    if minutes == 0:
+        return []
+    changed: list[dict[str, Any]] = []
+    for row in rows:
+        item_id = int(row["item_id"] or 0)
+        start_dt = parse_datetime(row["start_time"])
+        if item_id <= 0 or start_dt is None:
+            continue
+        end_dt = parse_datetime(row["end_time"])
+        new_start = start_dt + timedelta(minutes=minutes)
+        new_end = end_dt + timedelta(minutes=minutes) if end_dt is not None else None
+        conn.execute(
+            """
+            UPDATE calendar
+            SET start_time = ?,
+                end_time = ?,
+                modified_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND item_id = ?
+            """,
+            (_db_time(new_start), _db_time(new_end) if new_end else None, user_id, item_id),
+        )
+        changed.append(
+            {
+                "item_id": item_id,
+                "old_start_time": row["start_time"],
+                "old_end_time": row["end_time"],
+                "new_start_time": _db_time(new_start),
+                "new_end_time": _db_time(new_end) if new_end else None,
+            }
+        )
+    return changed
+
+
+def _patch_calendar_rows(conn: Any, user_id: str, rows: list[Any], patch_data: dict[str, Any]) -> list[dict[str, Any]]:
+    updates = patch_data.get("updates")
+    if not isinstance(updates, list):
+        return []
+    rows_by_id = {int(row["item_id"] or 0): row for row in rows}
+    changed: list[dict[str, Any]] = []
+    for update in updates:
+        if not isinstance(update, dict):
+            continue
+        item_id = to_int(update.get("item_id"), 0)
+        row = rows_by_id.get(item_id)
+        if row is None:
+            continue
+        fields: list[str] = []
+        params: list[Any] = []
+        item_date = str(row["date"] or "")
+        if "start_time" in update:
+            start_time = _calendar_datetime(item_date, update.get("start_time"))
+            if not start_time:
+                continue
+            fields.append("start_time = ?")
+            params.append(start_time)
+        if "end_time" in update:
+            end_time = _calendar_datetime(item_date, update.get("end_time"))
+            if not end_time:
+                continue
+            fields.append("end_time = ?")
+            params.append(end_time)
+        if "content" in update:
+            fields.append("content = ?")
+            params.append(str(update.get("content") or ""))
+        next_type = update.get("item_type", update.get("type"))
+        if next_type is not None:
+            if next_type not in VALID_CALENDAR_TYPES:
+                continue
+            fields.append("type = ?")
+            params.append(str(next_type))
+            fields.append("is_milk_pump = ?")
+            params.append(1 if next_type == CALENDAR_TYPE_PUMP else 0)
+        if not fields:
+            continue
+        fields.append("modified_at = CURRENT_TIMESTAMP")
+        params.extend([user_id, item_id])
+        conn.execute(
+            f"UPDATE calendar SET {', '.join(fields)} WHERE user_id = ? AND item_id = ?",
+            params,
+        )
+        changed.append({"item_id": item_id, "updated_fields": sorted(set(update.keys()) - {"item_id"})})
+    return changed
+
+
+def _range_window(start_at: Any, end_at: Any) -> dict[str, Any]:
+    start_dt = parse_datetime(start_at)
+    end_dt = parse_datetime(end_at)
+    if start_dt is None or end_dt is None:
+        return {"error": "start_at 和 end_at 必须是有效日期或日期时间。"}
+    if _is_date_only(end_at):
+        end_dt = end_dt + timedelta(days=1)
+    if end_dt <= start_dt:
+        return {"error": "end_at 必须晚于 start_at。"}
+    return {
+        "start_dt": start_dt,
+        "end_dt": end_dt,
+        "start_text": _db_time(start_dt),
+        "end_text": _db_time(end_dt),
+    }
+
+
+def _is_date_only(value: Any) -> bool:
+    token = norm_text(value)
+    return len(token) == 10 and token[4:5] in {"-", "/"} and token[7:8] in {"-", "/"}
 
 
 def _normalize_calendar_row(row: dict[str, Any]) -> CalendarItem:

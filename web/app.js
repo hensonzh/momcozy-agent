@@ -10,7 +10,6 @@ const conversationLabel = document.querySelector("#conversation");
 const skillsLabel = document.querySelector("#skills");
 
 const THINKING_EVENT_NAME = "momcozy.agent.thinking";
-const TEXT_IDLE_THINKING_DELAY_MS = 450;
 const MAX_IMAGE_ATTACHMENTS = 4;
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const CLIENT_USER_ID_KEY = "momcozy_user_id";
@@ -263,7 +262,6 @@ function createWorkRun() {
     hasAction: false,
     thinkingVisible: false,
     thinkingNode: null,
-    textIdleTimer: null,
   };
 }
 
@@ -320,27 +318,9 @@ function completeThinking(run) {
   run.thinkingVisible = false;
 }
 
-function clearTextIdleTimer(run) {
-  if (!run?.textIdleTimer) return;
-  window.clearTimeout(run.textIdleTimer);
-  run.textIdleTimer = null;
-}
-
-function scheduleTextIdleThinking(run) {
-  if (!run || run.finished) return;
-  clearTextIdleTimer(run);
-  run.textIdleTimer = window.setTimeout(() => {
-    run.textIdleTimer = null;
-    if (!run.finished) {
-      showThinking(run, { afterOutput: true, title: "Preparing next step" });
-    }
-  }, TEXT_IDLE_THINKING_DELAY_MS);
-}
-
 function finishWorkPanel(run, options = {}) {
   if (!run || run.finished) return;
   run.finished = true;
-  clearTextIdleTimer(run);
   completeThinking(run);
   const workPanel = options.failed ? ensureWorkPanel(run) : run.panel;
   if (!workPanel || workPanel._finished) return;
@@ -376,7 +356,6 @@ function finishWorkPanel(run, options = {}) {
 function addWorkToolStart(run, event) {
   if (!run || !event?.tool_call_id) return;
   run.hasAction = true;
-  clearTextIdleTimer(run);
   completeThinking(run);
   const workPanel = ensureWorkPanel(run);
   const toolName = event.tool_call_name || "tool";
@@ -393,7 +372,6 @@ function addWorkToolStart(run, event) {
 function addWorkToolArgs(run, event, toolName) {
   if (!run || !event?.tool_call_id) return;
   run.hasAction = true;
-  clearTextIdleTimer(run);
   completeThinking(run);
   const workPanel = ensureWorkPanel(run);
   const copy = toolArgsCopy(toolName || "tool");
@@ -411,7 +389,6 @@ function addWorkToolArgs(run, event, toolName) {
 function addWorkToolEnd(run, event, toolName) {
   if (!run || !event?.tool_call_id) return;
   run.hasAction = true;
-  clearTextIdleTimer(run);
   completeThinking(run);
   const workPanel = ensureWorkPanel(run);
   const copy = toolEndCopy(toolName || "tool");
@@ -429,7 +406,6 @@ function addWorkToolEnd(run, event, toolName) {
 function addWorkToolResult(run, event, result, toolName) {
   if (!run || !event?.tool_call_id) return;
   run.hasAction = true;
-  clearTextIdleTimer(run);
   completeThinking(run);
   const workPanel = ensureWorkPanel(run);
   const copy = toolResultCopy(toolName || result?.tool_name || "tool", result || {});
@@ -1770,11 +1746,6 @@ async function streamChat(text, workRun, images = []) {
     return toolNamesByKey.get(workItemKeyForToolCall(event)) || activeToolName || fallback;
   }
 
-  function showInitialThinking() {
-    if (workRun.hasOutput || workRun.hasAction || workRun.finished) return;
-    showThinking(workRun, { title: "Thinking" });
-  }
-
   while (true) {
     const { value, done } = await reader.read();
     buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
@@ -1787,21 +1758,19 @@ async function streamChat(text, workRun, images = []) {
 
       if (event.type === "RUN_STARTED") {
         updateMeta(event);
-        showInitialThinking();
       } else if (event.type === "ACTIVITY_SNAPSHOT") {
         updateMeta(event.content?.metadata || {});
-        if (event.content?.phase === "requesting_model") showInitialThinking();
       } else if (event.type === "CUSTOM" && event.name === THINKING_EVENT_NAME) {
         if (["started", "running"].includes(event.value?.status)) {
-          clearTextIdleTimer(workRun);
           showThinking(workRun, {
             afterOutput: Boolean(event.value?.metadata?.after_output_text),
             title: event.value?.metadata?.after_output_text ? "Preparing next step" : "Thinking",
           });
+        } else if (["completed", "failed"].includes(event.value?.status)) {
+          completeThinking(workRun);
         }
       } else if (event.type === "CUSTOM" && event.name === "momcozy.agent.status") {
         updateMeta(event.value?.metadata || {});
-        if (event.value?.phase === "requesting_model") showInitialThinking();
       } else if (event.type === "STEP_STARTED") {
         updateMeta(event.metadata || {});
       } else if (event.type === "STEP_FINISHED") {
@@ -1849,24 +1818,19 @@ async function streamChat(text, workRun, images = []) {
         }
       } else if (event.type === "TEXT_MESSAGE_CONTENT") {
         workRun.hasOutput = true;
-        clearTextIdleTimer(workRun);
         completeThinking(workRun);
         appendAssistantMarkdown(ensureAssistantNode(), event.delta || "");
-        scheduleTextIdleThinking(workRun);
         messages.scrollTop = messages.scrollHeight;
       } else if (event.type === "TEXT_MESSAGE_END") {
-        clearTextIdleTimer(workRun);
         if (statusNode) lastStatus = updateStatus(statusNode, "Answer ready.", { lastStatus, usedTools, done: true });
       } else if (event.type === "RUN_FINISHED") {
         finalData = event;
-        clearTextIdleTimer(workRun);
         completeThinking(workRun);
         if (statusNode) lastStatus = updateStatus(statusNode, "Run finished.", { lastStatus, usedTools, done: true });
         if (!formShown && !cardShown && (!assistantNode || !getAssistantMarkdown(assistantNode).trim())) {
           setAssistantMarkdown(ensureAssistantNode(), "(No text response)");
         }
       } else if (event.type === "RUN_ERROR") {
-        clearTextIdleTimer(workRun);
         completeThinking(workRun);
         throw new Error(event.message || "Run failed");
       }

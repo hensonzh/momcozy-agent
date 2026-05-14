@@ -50,6 +50,7 @@ src/momcozy_agent/
   tool_schemas.py   # Responses tool schema
   tool_registry.py  # tool 暴露策略、deferred namespaces、handler dispatch
   tool_handlers/    # 应用侧 tool handler adapter/mock
+  services/         # 业务服务层；当前包含 milk-management 的数据访问和计划/calendar 逻辑
   server.py      # 本地 AG-UI SSE 测试服务和 thread session
   config.py      # .env / 配置加载
   types.py       # 共享类型
@@ -207,7 +208,6 @@ skills/<skill-id>/SKILL.md
 - references
 - scripts
 - assets
-- tool_names
 
 `read_skill_file` 只能读取 `load_skill` 返回的 references/assets 中允许的文本文件。  
 `run_approved_skill_script` 只能执行应用侧注册过的 allowlist handler，不会执行模型生成的 shell 命令。
@@ -269,6 +269,7 @@ message_sent_at: 2026-05-05T17:45:03+08:00
 模型需要个性化信息时，应按需调用当前真实可用的读取工具：
 
 - `profile_get`
+- `milk_management` namespace 下的奶量记录、计划、计划执行情况和 calendar 读取工具
 
 当前方案不再维护 `context_ledger_delta` 或 `context_invalidations`。这样可以避免每轮因为用户资料变化而污染上下文，也减少模型依赖旧事实的风险。
 
@@ -302,15 +303,29 @@ message_sent_at: 2026-05-05T17:45:03+08:00
 
 - `care_handoffs`：`handoff_summary_generate`
 - `device_support`：`device_manual_search`、`support_ticket_draft_create`
+- `milk_management`：奶量评估、宝宝生长评估、任意时间段记录读取/修改、追奶/稳奶/减奶计划、今日安排、日结、计划执行情况和 calendar 调整工具
 
 每个 namespace 中的 function 都设置 `defer_loading: true`。模型开始时只看到 namespace 名称和描述；需要具体工具时由 `tool_search` 加载对应 function schema。
 
-当前 `tool_handlers/` 还是 adapter/mock 层：
+当前 `tool_handlers/` 是应用侧工具 adapter 层，负责把 Responses function call 参数转换成业务服务调用，并处理运行时注入、脱敏和写操作边界。`services/` 是业务服务层，承载真实业务逻辑、数据访问和领域校验；例如 milk-management 的记录读写、计划生成、日程调整和日结读取都在 `services/milk_management/`。
 
 - 读类工具从 runtime inputs 返回数据或空结果。
+- milk-management 工具从 runtime inputs 注入 `user_id`，模型不需要也不应该提供用户 ID。
 - `ui_form_create` 返回前端可渲染的 form spec。
 - `ui_card_create` 返回前端可渲染的 card artifact；前端根据 `card_type` 和 `schema_version` 选择组件。
-- 需要真实后端的写类、提醒、检索、booking、case 创建、support ticket 等占位工具当前不暴露给模型。
+- 尚未接入真实后端的提醒、booking、case 创建等占位工具当前不暴露给模型。
+
+### Tool Responsibility Boundary
+
+工具是模型和外部环境交互的媒介，但不是第二个对话代理。业务 service 可以做确定性的数据聚合、规则计算、边界校验、候选方案生成和事务写入；不应在 tool 内再次调用 LLM 生成用户话术。
+
+- `*_get`：读取事实和记录。
+- `*_evaluate`：用固定参考数据和规则返回结构化评估，不输出诊断。
+- `*_validate`：返回 `valid`、`violations`、`warnings` 等校验结果。
+- `*_preview`：返回候选方案或变更 proposal，不写库。
+- `*_apply` / `*_update` / `*_delete`：执行已确认写入，必须有明确确认和必要的幂等键。
+
+最终用户意图判断、补问策略、风险解释、鼓励/安抚话术和回复组织仍由主 Agent 完成。工具返回的 `summary` 或 `message` 只作为结构化结果摘要，不能当作最终 assistant 回复原样透出。
 
 ### Reminder 设计
 
@@ -339,9 +354,8 @@ message_sent_at: 2026-05-05T17:45:03+08:00
 Work panel 的首个可见进度由 Responses streaming function-call 事件驱动：
 
 - 后端在 `response.output_item.added` / `response.function_call_arguments.done` 阶段识别 `function_call`，并尽早发送 `TOOL_CALL_START`。
-- 如果模型没有立刻发送 reasoning stream 事件，测试前端会在 `RUN_STARTED` 或 `agent.status=requesting_model` 时先显示 `Thinking`，避免首轮空白等待。
-- 当 assistant text item 已结束但 response 仍未完成时，后端发送 `momcozy.agent.thinking` running 事件；测试前端显示 `Preparing next step`，避免文本结束到工具开始之间出现空白等待。
-- 测试前端不会在 `thinking completed` 时移除 Thinking，而是等下一条可见事件或 run 结束替换；收到 text delta 后，如果 run 未结束且 450ms 内没有新 delta，也会显示轻量 `Preparing next step`。这是 UI 体验层 debounce/idle，不改变智能体方案。
+- Thinking 只由真实 Responses reasoning stream 事件驱动；`RUN_STARTED`、`requesting_model` 和普通文本 idle 不再显示 Thinking。
+- 如果真实 reasoning 发生在 assistant text delta 之后，测试前端显示 `Preparing next step`；`thinking completed` / `failed` 会立即移除该状态。
 - `TOOL_CALL_START` 到达后，测试前端立即创建或更新 work item。
 - `TOOL_CALL_RESULT` 到达后，测试前端立即把同一个 work item 标记为完成或失败，并渲染表单/卡片等结构化 UI。
 - Work item 默认只展示简短状态标题；失败时才展示错误详情。

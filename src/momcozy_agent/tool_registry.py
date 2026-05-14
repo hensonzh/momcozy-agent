@@ -8,6 +8,7 @@ from .tool_handlers.common import decode_json_argument_strings
 from .tool_handlers.device import create_support_ticket_draft, search_device_manual
 from .tool_handlers.handoff import generate_handoff_summary
 from .tool_handlers.ibclc import create_ibclc_consult_card
+from .tool_handlers.milk_management import execute_milk_management_tool
 from .tool_handlers.profile import get_profile
 from .tool_handlers.skill_runtime import (
     list_skills,
@@ -30,6 +31,52 @@ CORE_IMMEDIATE_TOOLS: list[ToolName] = [
     "ui_card_create",
     "ibclc_consult_card_create",
 ]
+MILK_MANAGEMENT_TOOLS: list[ToolName] = [
+    "milk_context_get",
+    "milk_assessment_evaluate",
+    "infant_growth_evaluate",
+    "milk_plan_preview",
+    "milk_plan_apply",
+    "milk_plan_list",
+    "milk_plan_get",
+    "milk_plan_delete",
+    "milk_plan_update",
+    "milk_plan_regenerate_preview",
+    "milk_plan_target_validate",
+    "milk_plan_validate",
+    "milk_records_range_get",
+    "milk_record_create",
+    "milk_record_update",
+    "milk_record_delete",
+    "milk_today_overview_get",
+    "milk_today_summary_get",
+    "milk_today_tasks_shift",
+    "milk_today_tasks_confirm",
+    "milk_calendar_day_get",
+    "milk_calendar_range_get",
+    "milk_calendar_adjustment_preview",
+    "milk_calendar_adjustment_apply",
+    "milk_calendar_range_update",
+    "milk_calendar_item_update",
+    "milk_calendar_item_delete",
+]
+MILK_MANAGEMENT_READ_ONLY_TOOLS: set[ToolName] = {
+    "milk_context_get",
+    "milk_assessment_evaluate",
+    "infant_growth_evaluate",
+    "milk_plan_preview",
+    "milk_plan_list",
+    "milk_plan_get",
+    "milk_plan_regenerate_preview",
+    "milk_plan_target_validate",
+    "milk_plan_validate",
+    "milk_records_range_get",
+    "milk_today_overview_get",
+    "milk_today_summary_get",
+    "milk_calendar_day_get",
+    "milk_calendar_range_get",
+    "milk_calendar_adjustment_preview",
+}
 
 DEFERRED_TOOL_NAMESPACES: dict[str, dict[str, Any]] = {
     "care_handoffs": {
@@ -40,6 +87,10 @@ DEFERRED_TOOL_NAMESPACES: dict[str, dict[str, Any]] = {
         "description": "用于吸奶器设备支持的工具，包括本地说明书/FAQ 检索和客服工单草稿。",
         "tool_names": ["device_manual_search", "support_ticket_draft_create"],
     },
+    "milk_management": {
+        "description": "用于奶量评估、任意时间段记录读取/修改、追奶/稳奶/减奶计划、计划执行情况读取和奶量 calendar 调整的工具。",
+        "tool_names": MILK_MANAGEMENT_TOOLS,
+    },
 }
 
 READ_ONLY_TOOL_NAMES = {
@@ -48,6 +99,7 @@ READ_ONLY_TOOL_NAMES = {
     "ibclc_consult_card_create",
     "device_manual_search",
     "support_ticket_draft_create",
+    *MILK_MANAGEMENT_READ_ONLY_TOOLS,
 }
 
 TOOL_HANDLERS: dict[ToolName, ToolHandler] = {
@@ -64,6 +116,7 @@ TOOL_HANDLERS: dict[ToolName, ToolHandler] = {
     "device_manual_search": search_device_manual,
     "support_ticket_draft_create": create_support_ticket_draft,
 }
+TOOL_HANDLERS.update({tool_name: execute_milk_management_tool for tool_name in MILK_MANAGEMENT_TOOLS})
 
 
 def select_runtime_tools() -> list[ToolDefinition]:

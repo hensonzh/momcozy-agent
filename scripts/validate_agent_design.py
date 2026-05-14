@@ -42,6 +42,12 @@ def main() -> None:
     assert "support_ticket_draft_create" in initial_deferred_tool_names
     assert "device_manual_search" not in initial_tool_names
     assert "device_manual_search" in initial_deferred_tool_names
+    assert "milk_context_get" not in initial_tool_names
+    assert "milk_context_get" in initial_deferred_tool_names
+    assert "milk_plan_preview" not in initial_tool_names
+    assert "milk_plan_preview" in initial_deferred_tool_names
+    assert "milk_calendar_adjustment_apply" not in initial_tool_names
+    assert "milk_calendar_adjustment_apply" in initial_deferred_tool_names
     for removed_tool_name in (
         "ibclc_book",
         "reminder_create",
@@ -89,7 +95,7 @@ def main() -> None:
     assert image_content[2] == {"type": "input_image", "image_url": image_data_url, "detail": "auto"}
 
     loaded = execute_skill_runtime_tool("load_skill", {"skill_id": "milk-management"})
-    assert "# 母乳管理" in loaded["skill_md"]
+    assert "# 奶量管理" in loaded["skill_md"]
     assert "tool_names" not in loaded, "load_skill must not advertise per-skill tool_names"
     assert loaded["id"] == "milk-management"
     assert loaded["name"] == "milk-management"
