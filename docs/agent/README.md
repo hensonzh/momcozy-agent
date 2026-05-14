@@ -51,7 +51,9 @@ src/momcozy_agent/
   tool_registry.py  # tool 暴露策略、deferred namespaces、handler dispatch
   tool_handlers/    # 应用侧 tool handler adapter/mock
   services/         # 业务服务层；当前包含 milk-management 的数据访问和计划/calendar 逻辑
-  server.py      # 本地 AG-UI SSE 测试服务和 thread session
+  api/          # App 端 WebSocket adapter；当前包含 AG-UI WebSocket 桥接
+  api_app.py    # App/Web 统一 FastAPI app 入口
+  server.py      # FastAPI Web Demo、AG-UI SSE endpoint、thread session、共享 agent stream
   config.py      # .env / 配置加载
   types.py       # 共享类型
 ```
@@ -77,6 +79,14 @@ web/
 http://127.0.0.1:8768/
 ```
 
+App 端 WebSocket 桥接入口：
+
+```bash
+.venv/bin/python -u scripts/run_all.py
+```
+
+默认在 `ENTRY_HOST:ENTRY_PORT` 启动统一 FastAPI 服务，默认 `0.0.0.0:8769`。该服务同时提供 Web Demo 的 `POST /api/ag-ui` SSE 接口和 App 的 `WS /api/ag-ui-ws` 接口。App 连接 `/api/ag-ui-ws` 后发送与 `/api/ag-ui` 相同的 AG-UI JSON 请求体，桥接层复用同一套 agent stream，并把每个 AG-UI event 作为 WebSocket JSON text frame 返回。这个入口只做传输协议适配，不改变 agent loop、skill 选择、tool registry 或 session 状态。
+
 ## 请求链路
 
 用户从前端发送消息后，整体流程如下：
@@ -84,7 +94,7 @@ http://127.0.0.1:8768/
 ```text
 web/app.js
   -> POST /api/ag-ui
-  -> server.py 解析 AG-UI payload
+  -> FastAPI server.py 解析 AG-UI payload
   -> 按 threadId 获取 ChatSession
   -> 恢复 previous_response_id、loaded_skill_ids、ContextState
   -> run_agent_loop()
@@ -498,7 +508,7 @@ ui_form_create
 - business tools 尚未接真实业务系统。
 - 写类、提醒、检索、booking、case 创建、support ticket 等工具已从当前可见工具集中移除，接入真实后端后再恢复。
 - 表单提交还不是结构化 application event。
-- 本地服务使用 stdlib HTTP server，不是生产 ASGI 服务。
+- 本地服务已迁移到 FastAPI，但仍是内存 session 和本地验证形态，不是完整生产后端。
 - 缺少完整单元测试和观测日志。
 
 ## 下一步建议
@@ -509,4 +519,4 @@ ui_form_create
 2. 为 `run_agent_loop`、`load_skill`、`read_skill_file`、`run_approved_skill_script`、`/api/ag-ui` 增加测试。
 3. 接入真实业务 adapter：profile 写入、case、memory、retrieval、reminder、device support。
 4. 补齐 birth-prep、milk-management、ibclc、device-guidance 的 references/assets。
-5. 将 stdlib 测试服务迁移到生产 API 框架。
+5. 为 FastAPI 入口补齐认证、限流、持久化 session 和生产观测。

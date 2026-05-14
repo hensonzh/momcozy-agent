@@ -6,13 +6,14 @@
 
 - 主前端：`web/index.html`、`web/app.js`、`web/styles.css`
 - IBCLC 在线咨询页：`web/ibclc-chat.html`
-- HTTP 服务：`src/momcozy_agent/server.py`
+- FastAPI 服务：`src/momcozy_agent/server.py`
+- WebSocket 桥接服务：`src/momcozy_agent/api_app.py`、`src/momcozy_agent/api/chat_ws_bridge.py`
 - Agent loop：`src/momcozy_agent/agents.py`
 - 类型定义：`src/momcozy_agent/types.py`
 
 ## 1. 总体链路
 
-当前 Web 端和智能体之间有三类通信：
+当前 Web Demo 和智能体之间有三类通信，App 端可通过新增 WebSocket 桥接层复用主聊天流：
 
 1. 主聊天流式接口：`POST /api/ag-ui`
    - 前端发送用户消息、图片、会话 id。
@@ -28,6 +29,20 @@
    - 当前用于 IBCLC 在线咨询结束事件。
    - IBCLC H5 页把 `ibclc_consult_completed` 写入后端 session。
    - 后续主聊天轮次会把该事件注入 `client_event_context`，智能体能感知用户已经完成过一次 IBCLC 在线咨询。
+
+App 端 WebSocket 链路：
+
+```text
+App
+  -> WS /api/ag-ui-ws
+  -> FastAPI bridge
+  -> shared server.py agent stream
+  -> agent loop
+  -> AG-UI events as WS JSON text
+  -> App
+```
+
+这个桥接层不改变 agent loop、tool handler、session 逻辑，也不引入应用侧业务路由。它复用 `/api/ag-ui` 同一套 agent stream，只是把输出从 SSE bytes 换成 WebSocket JSON text frame。
 
 ## 2. 主聊天接口：`POST /api/ag-ui`
 
@@ -46,6 +61,26 @@ Content-Type: text/event-stream; charset=utf-8
 ```
 
 前端发送位置：`web/app.js` 的 `streamChat()`。
+
+### 2.1.1 App WebSocket 桥接：`/api/ag-ui-ws`
+
+运行 `scripts/run_all.py` 时会同时启动：
+
+- `POST /api/ag-ui`：Web Demo 使用的 SSE 聊天服务。
+- `WS /api/ag-ui-ws`：App 使用的 WebSocket 聊天服务。
+- 静态 Web Demo、`/api/support-ticket-submit`、`/api/client-event` 等现有 Web Demo 辅助接口。
+
+默认监听 `ENTRY_HOST:ENTRY_PORT`，默认值是 `0.0.0.0:8769`。单独运行 Web Demo 时仍可使用 `scripts/run_chat_ui.py`，默认监听 `127.0.0.1:8768`。
+
+WebSocket 客户端连接 `ws://<host>:<port>/api/ag-ui-ws` 后，第一帧必须发送与 `/api/ag-ui` 相同的 AG-UI JSON 请求体。后端会复用同一套 agent stream，并把每个 AG-UI event JSON 以 WebSocket text frame 原样发回 App。事件结构仍然是 `RUN_STARTED`、`CUSTOM`、`TOOL_CALL_*`、`TEXT_MESSAGE_*`、`RUN_FINISHED`、`RUN_ERROR` 等 AG-UI 事件。
+
+`/api/ag-ui-ws` 需要 `ENTRY_API_KEY`：
+
+- 查询参数：`/api/ag-ui-ws?token=<ENTRY_API_KEY>`
+- Header：`Authorization: Bearer <ENTRY_API_KEY>`
+- WebSocket protocol fragment：`Sec-WebSocket-Protocol: <ENTRY_API_KEY>`
+
+如果 `ENTRY_API_KEY` 未设置或校验失败，连接会被关闭。桥接层不保存额外会话状态；WebSocket 和 SSE 入口都通过同一个 FastAPI app 的 `ChatRuntime` 按 `threadId` 维护会话。
 
 ### 2.2 前端请求体
 

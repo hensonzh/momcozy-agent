@@ -1,21 +1,21 @@
-from __future__ import annotations
-
+import asyncio
 import json
 import os
 import sys
+import threading
 import time
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .agents import run_agent_loop, run_error_event
 from .config import load_project_env
 from .contexts import DEFAULT_LOCALE, DEFAULT_TIMEZONE, ContextState
+from .services.paths import ensure_runtime_dirs
 from .types import SkillId
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,13 +25,6 @@ HOST = "127.0.0.1"
 PORT = 8768
 MAX_IMAGE_ATTACHMENTS = 4
 STREAM_TIMING_ENV = "MOMCOZY_DEBUG_STREAM_TIMING"
-STATIC_FILES = {
-    "/": ("index.html", "text/html; charset=utf-8"),
-    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-    "/styles.css": ("styles.css", "text/css; charset=utf-8"),
-    "/momcozy_logo.png": ("momcozy_logo.png", "image/png"),
-    "/ibclc-chat.html": ("ibclc-chat.html", "text/html; charset=utf-8"),
-}
 STATIC_CONTENT_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".gif": "image/gif",
@@ -80,116 +73,157 @@ def make_runtime() -> ChatRuntime:
     return ChatRuntime(OpenAI())
 
 
-class ChatHandler(BaseHTTPRequestHandler):
-    runtime: ChatRuntime
+def create_app(runtime: ChatRuntime | None = None, *, include_websocket_bridge: bool = False) -> Any:
+    try:
+        from fastapi import FastAPI, Request
+        from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+        from fastapi.staticfiles import StaticFiles
+    except ImportError as exc:
+        raise RuntimeError("FastAPI is not installed. Install the 'server' optional dependencies.") from exc
 
-    def do_GET(self) -> None:
-        self._handle_static_get(include_body=True)
+    load_project_env(ROOT / ".env")
+    ensure_runtime_dirs()
 
-    def do_HEAD(self) -> None:
-        self._handle_static_get(include_body=False)
+    app = FastAPI(title="Momcozy Agent API")
+    app.state.runtime = runtime
+    app.state.runtime_lock = threading.Lock()
 
-    def _handle_static_get(self, *, include_body: bool) -> None:
-        path = urlparse(self.path).path
-        static_file = STATIC_FILES.get(path)
-        if static_file:
-            filename, content_type = static_file
-            self._send_file(WEB_ROOT / filename, content_type, include_body=include_body)
-            return
-        if path.startswith("/images/"):
-            self._handle_static_asset(path, include_body=include_body)
-            return
-        if path.startswith("/skill-assets/"):
-            self._handle_skill_asset(path, include_body=include_body)
-            return
-        self.send_error(404)
-
-    def do_POST(self) -> None:
-        path = urlparse(self.path).path
-        if path == "/api/ag-ui":
-            self._handle_ag_ui_stream()
-            return
-        if path == "/api/support-ticket-submit":
-            self._handle_support_ticket_submit()
-            return
-        if path == "/api/client-event":
-            self._handle_client_event()
-            return
-        self.send_error(404)
-
-    def _handle_client_event(self) -> None:
+    @app.post("/api/ag-ui")
+    async def ag_ui_stream(request: Request) -> Any:
         try:
-            payload = self._read_json()
-            thread_id = str(_field(payload, "thread_id", "threadId") or payload.get("conversation_id") or "").strip()
-            if not thread_id:
-                raise ValueError("client event requires thread_id.")
-            event = _format_client_event(payload)
-            session = self.runtime.get_session(thread_id)
-            if event not in session.context_state.client_events:
-                session.context_state.client_events.append(event)
-                session.context_state.client_events = session.context_state.client_events[-10:]
-        except Exception as exc:
-            self._send_json({"error": str(exc)}, status=400)
-            return
-        self._send_json({
-            "status": "recorded",
-            "conversation_id": session.conversation_id,
-            "consult_id": _client_event_consult_id(payload),
-            "event": event,
-            "session_state": _session_state_payload(session),
-        })
-
-    def _handle_support_ticket_submit(self) -> None:
-        try:
-            payload = self._read_json()
-            ticket = payload.get("ticket")
-            if not isinstance(ticket, dict):
-                raise ValueError("support ticket submit requires a ticket object.")
-            result = _submit_support_ticket(ticket)
-        except Exception as exc:
-            self._send_json({"error": str(exc)}, status=400)
-            return
-        self._send_json(result)
-
-    def _handle_ag_ui_stream(self) -> None:
-        try:
-            payload = self._read_json()
+            payload = await _read_json_payload(request)
             inputs = _runtime_inputs_from_ag_ui(payload)
-        except Exception as exc:
-            self._send_json({"error": str(exc)}, status=400)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
+        stream = stream_ag_ui_events(payload, inputs, runtime_from_app(request.app))
+        return StreamingResponse(
+            stream_sse_bytes(stream),
+            media_type="text/event-stream; charset=utf-8",
+            headers={"Cache-Control": "no-cache", "Connection": "close"},
+        )
+
+    @app.post("/api/support-ticket-submit")
+    async def support_ticket_submit(request: Request) -> Any:
+        try:
+            payload = await _read_json_payload(request)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        ticket = payload.get("ticket") if isinstance(payload, dict) else None
+        if not isinstance(ticket, dict):
+            return JSONResponse({"error": "support ticket submit requires a ticket object."}, status_code=400)
+        return JSONResponse(_submit_support_ticket(ticket))
+
+    @app.post("/api/client-event")
+    async def client_event(request: Request) -> Any:
+        try:
+            payload = await _read_json_payload(request)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if not isinstance(payload, dict):
+            return JSONResponse({"error": "client event requires a JSON object."}, status_code=400)
+
+        thread_id = str(_field(payload, "thread_id", "threadId") or payload.get("conversation_id") or "").strip()
+        if not thread_id:
+            return JSONResponse({"error": "client event requires thread_id."}, status_code=400)
+
+        event = _format_client_event(payload)
+        session = runtime_from_app(request.app).get_session(thread_id)
+        if event not in session.context_state.client_events:
+            session.context_state.client_events.append(event)
+            session.context_state.client_events = session.context_state.client_events[-10:]
+
+        return JSONResponse(
+            {
+                "status": "recorded",
+                "conversation_id": session.conversation_id,
+                "consult_id": _client_event_consult_id(payload),
+                "event": event,
+                "session_state": _session_state_payload(session),
+            }
+        )
+
+    @app.get("/skill-assets/{skill_id}/{asset_path:path}")
+    async def skill_asset(skill_id: str, asset_path: str) -> Any:
+        asset_full = (SKILLS_ROOT / skill_id / "assets" / asset_path).resolve()
+        skill_assets_root = (SKILLS_ROOT / skill_id / "assets").resolve()
+        if skill_assets_root not in asset_full.parents or not asset_full.is_file():
+            return JSONResponse({"error": "not found"}, status_code=404)
+        content_type = STATIC_CONTENT_TYPES.get(asset_full.suffix.lower())
+        if content_type is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return FileResponse(asset_full, media_type=content_type)
+
+    if include_websocket_bridge:
+        from .api.chat_ws_bridge import router as chat_ws_router
+
+        app.include_router(chat_ws_router)
+
+    if WEB_ROOT.exists():
+        app.mount("/", StaticFiles(directory=str(WEB_ROOT), html=True), name="web")
+
+    return app
+
+
+def runtime_from_app(app: Any) -> ChatRuntime:
+    runtime = getattr(app.state, "runtime", None)
+    if isinstance(runtime, ChatRuntime):
+        return runtime
+
+    runtime_lock = getattr(app.state, "runtime_lock", None)
+    if runtime_lock is None:
+        runtime = make_runtime()
+        app.state.runtime = runtime
+        return runtime
+
+    with runtime_lock:
+        runtime = getattr(app.state, "runtime", None)
+        if isinstance(runtime, ChatRuntime):
+            return runtime
+        runtime = make_runtime()
+        app.state.runtime = runtime
+        return runtime
+
+
+async def stream_ag_ui_events(
+    payload: dict[str, Any],
+    inputs: dict[str, Any],
+    runtime: ChatRuntime,
+) -> AsyncIterator[dict[str, Any]]:
+    thread_id = _field(payload, "thread_id", "threadId") or f"thread_{payload.get('conversation_id', 'anonymous')}"
+    run_id = _field(payload, "run_id", "runId") or f"run_{date.today().isoformat()}"
+    parent_run_id = _field(payload, "parent_run_id", "parentRunId")
+    assistant_message_id = f"{run_id}:assistant"
+
+    session = runtime.get_session(str(thread_id))
+    if session.previous_response_id and "previous_response_id" not in inputs:
+        inputs["previous_response_id"] = session.previous_response_id
+
+    sentinel = object()
+    output_queue: asyncio.Queue[Any] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    stream_started_at = time.perf_counter()
+    debug_stream_timing = _debug_stream_timing_enabled()
+
+    def push(item: Any) -> None:
+        loop.call_soon_threadsafe(output_queue.put_nowait, item)
+
+    def log_timing(label: str, metadata: dict[str, Any] | None = None) -> None:
+        if not debug_stream_timing:
             return
+        elapsed_ms = (time.perf_counter() - stream_started_at) * 1000
+        details = _format_timing_metadata(metadata)
+        print(f"[momcozy.stream] +{elapsed_ms:7.1f}ms {run_id} {label}{details}", file=sys.stderr, flush=True)
 
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
-        self.end_headers()
-
-        thread_id = _field(payload, "thread_id", "threadId") or f"thread_{payload.get('conversation_id', 'anonymous')}"
-        run_id = _field(payload, "run_id", "runId") or f"run_{date.today().isoformat()}"
-        parent_run_id = _field(payload, "parent_run_id", "parentRunId")
-        assistant_message_id = f"{run_id}:assistant"
-        session = self.runtime.get_session(str(thread_id))
-        if session.previous_response_id and "previous_response_id" not in inputs:
-            inputs["previous_response_id"] = session.previous_response_id
-
+    def worker() -> None:
         pending_run_finished: dict[str, Any] | None = None
         pending_assistant_followups: list[str] = []
         text_started = False
         streamed_text_parts: list[str] = []
-        stream_started_at = time.perf_counter()
-        debug_stream_timing = _debug_stream_timing_enabled()
 
-        def log_timing(label: str, metadata: dict[str, Any] | None = None) -> None:
-            if not debug_stream_timing:
-                return
-            elapsed_ms = (time.perf_counter() - stream_started_at) * 1000
-            details = _format_timing_metadata(metadata)
-            print(f"[momcozy.stream] +{elapsed_ms:7.1f}ms {run_id} {label}{details}", file=sys.stderr, flush=True)
-
-        def send_sse_event(event: dict[str, Any]) -> None:
+        def send_event(event: dict[str, Any]) -> None:
             log_timing(f"sse:{event.get('type', 'unknown')}", _ag_ui_timing_metadata(event))
-            self._send_sse_event(event)
+            push(event)
 
         def send_ag_ui_event(event: dict[str, Any]) -> None:
             nonlocal pending_run_finished
@@ -200,15 +234,15 @@ class ChatHandler(BaseHTTPRequestHandler):
             followup = _assistant_followup_from_tool_result_event(event)
             if followup and followup not in pending_assistant_followups:
                 pending_assistant_followups.append(followup)
-            send_sse_event(event)
+            send_event(event)
 
         def send_text_delta(delta: str) -> None:
             nonlocal text_started
             if not text_started:
-                send_sse_event({"type": "TEXT_MESSAGE_START", "message_id": assistant_message_id, "role": "assistant"})
+                send_event({"type": "TEXT_MESSAGE_START", "message_id": assistant_message_id, "role": "assistant"})
                 text_started = True
             streamed_text_parts.append(delta)
-            send_sse_event({"type": "TEXT_MESSAGE_CONTENT", "message_id": assistant_message_id, "delta": delta})
+            send_event({"type": "TEXT_MESSAGE_CONTENT", "message_id": assistant_message_id, "delta": delta})
 
         response_stream_timing = (
             lambda event_type, metadata: log_timing(f"responses:{event_type}", metadata)
@@ -216,13 +250,13 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         try:
             agent_options: dict[str, Any] = {
-                "model": self.runtime.model,
-                "store": self.runtime.store,
+                "model": runtime.model,
+                "store": runtime.store,
                 "loaded_skill_ids": session.loaded_skill_ids,
                 "context_state": session.context_state,
             }
             response = run_agent_loop(
-                self.runtime.client,
+                runtime.client,
                 inputs,
                 agent_options,
                 on_ag_ui_event=send_ag_ui_event,
@@ -247,77 +281,54 @@ class ChatHandler(BaseHTTPRequestHandler):
                     send_text_delta(f"\n\n{followup}")
                     current_text = f"{current_text}\n\n{followup}"
             if text_started:
-                send_sse_event({"type": "TEXT_MESSAGE_END", "message_id": assistant_message_id})
+                send_event({"type": "TEXT_MESSAGE_END", "message_id": assistant_message_id})
             if pending_run_finished:
-                send_sse_event(pending_run_finished)
+                send_event(pending_run_finished)
         except Exception as exc:
-            send_sse_event(run_error_event(str(exc), type(exc).__name__))
+            send_event(run_error_event(str(exc), type(exc).__name__))
+        finally:
+            push(sentinel)
 
-    def log_message(self, format: str, *args: object) -> None:
-        return
+    threading.Thread(target=worker, daemon=True).start()
 
-    def _read_json(self) -> dict:
-        length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length).decode("utf-8")
-        return json.loads(raw or "{}")
+    while True:
+        item = await output_queue.get()
+        if item is sentinel:
+            break
+        yield item
 
-    def _send_json(self, payload: dict, *, status: int = 200) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
 
-    def _send_sse_event(self, payload: dict[str, Any]) -> None:
-        body = f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
-        self.wfile.write(body)
-        self.wfile.flush()
+async def stream_sse_bytes(events: AsyncIterator[dict[str, Any]]) -> AsyncIterator[bytes]:
+    async for event in events:
+        yield _sse_format(event)
 
-    def _send_file(self, path: Path, content_type: str, *, include_body: bool = True) -> None:
-        body = path.read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        if include_body:
-            self.wfile.write(body)
 
-    def _handle_static_asset(self, request_path: str, *, include_body: bool) -> None:
-        asset_path = (WEB_ROOT / request_path.lstrip("/")).resolve()
-        web_root = WEB_ROOT.resolve()
-        if web_root not in asset_path.parents or not asset_path.is_file():
-            self.send_error(404)
-            return
-        content_type = STATIC_CONTENT_TYPES.get(asset_path.suffix.lower())
-        if content_type is None:
-            self.send_error(404)
-            return
-        self._send_file(asset_path, content_type, include_body=include_body)
-
-    def _handle_skill_asset(self, request_path: str, *, include_body: bool) -> None:
-        relative_path = request_path.removeprefix("/skill-assets/")
-        skill_id, _, asset_name = relative_path.partition("/")
-        if not skill_id or not asset_name:
-            self.send_error(404)
-            return
-        asset_path = (SKILLS_ROOT / skill_id / "assets" / asset_name).resolve()
-        skill_assets_root = (SKILLS_ROOT / skill_id / "assets").resolve()
-        if skill_assets_root not in asset_path.parents or not asset_path.is_file():
-            self.send_error(404)
-            return
-        content_type = STATIC_CONTENT_TYPES.get(asset_path.suffix.lower())
-        if content_type is None:
-            self.send_error(404)
-            return
-        self._send_file(asset_path, content_type, include_body=include_body)
+def _sse_format(event: dict[str, Any]) -> bytes:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
 def main() -> None:
-    ChatHandler.runtime = make_runtime()
-    server = ThreadingHTTPServer((HOST, PORT), ChatHandler)
+    try:
+        import uvicorn
+    except ImportError as exc:
+        raise RuntimeError("uvicorn is not installed. Install the 'server' optional dependencies.") from exc
+
+    application = create_app(runtime=make_runtime())
     print(f"Momcozy agent test UI: http://{HOST}:{PORT}")
-    server.serve_forever()
+    uvicorn.run(application, host=HOST, port=PORT, log_level="warning")
+
+
+async def _read_json_payload(request: Any) -> dict[str, Any]:
+    raw = await request.body()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(f"request body must be valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object.")
+    return payload
 
 
 def _debug_stream_timing_enabled() -> bool:
@@ -371,6 +382,9 @@ def _ag_ui_timing_metadata(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def _runtime_inputs_from_ag_ui(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("AG-UI input requires a JSON object.")
+
     message = _latest_user_message(payload.get("messages", []))
     images = _latest_user_images(payload.get("messages", []))
     if not message:
