@@ -499,10 +499,13 @@ def _submit_support_ticket(ticket: dict[str, Any]) -> dict[str, Any]:
 
 
 def _format_client_event(payload: dict[str, Any]) -> str:
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    context_text = payload.get("context_text") or metadata.get("context_text")
+    if context_text:
+        return str(context_text).strip()
     event_type = str(payload.get("event_type") or payload.get("type") or "client_event").strip()
     label = str(payload.get("label") or event_type).strip()
     occurred_at = str(payload.get("occurred_at") or payload.get("message_sent_at") or "").strip()
-    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     detail_parts = []
     for key in ("user_id", "consultant_name", "consultant_credentials", "source", "consult_id"):
         value = metadata.get(key) or payload.get(key)

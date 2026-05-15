@@ -23,6 +23,7 @@ from ..services import data_store
 from ..services.milk_management.feeding import assess_feeding_demand_reference
 from ..services.milk_management.status_advice import generate_status_advice
 from ..services.paths import UPLOAD_ROOT, ensure_runtime_dirs
+from ..services.pump_session_summary import build_pump_session_summary
 
 
 router = APIRouter()
@@ -156,6 +157,34 @@ async def calculate_pump_process_data(request: Request) -> dict[str, Any]:
     except Exception:
         return _pump_process_data_response(status=400, message="failed to calculate pump process", error=-1, text="failed to calculate pump process")
     return _pump_process_data_response(status=200, message="success", error=0, process_l=process_l, process_r=process_r, process_all=process_all)
+
+
+@router.post("/v1/pump/session-summary")
+async def create_pump_session_summary(request: Request) -> dict[str, Any]:
+    verify_api_key(request)
+    body = await _json_body_or_error(request, basic=True)
+    if not isinstance(body, dict):
+        return {"status": 400, "message": "invalid request body", "data": {"error": -1}}
+    conversation_id = _pump_session_conversation_id(body)
+    if not conversation_id:
+        return {"status": 400, "message": "conversation_id is required", "data": {"error": -1, "message": "conversation_id is required"}}
+    result = build_pump_session_summary(body)
+    data = result.get("data") if isinstance(result.get("data"), dict) else {"error": -1}
+    if not result.get("ok"):
+        return {
+            "status": 400,
+            "message": str(data.get("message") or result.get("status") or "failed"),
+            "data": data,
+        }
+    context_status = await _append_pump_session_summary_context(
+        request,
+        body,
+        data,
+        conversation_id=conversation_id,
+        context_text=str(result.get("context_text") or ""),
+    )
+    data["context"] = context_status
+    return {"status": 200, "message": "success", "data": data}
 
 
 @router.post("/v1/pump/threshold/upload")
@@ -885,6 +914,103 @@ def _calculate_sensor_process(device: dict[str, Any]) -> int:
 
 def _pump_process_data_response(*, status: int, message: str, error: int, text: str = "", process_l: int = 0, process_r: int = 0, process_all: int = 0) -> dict[str, Any]:
     return {"status": status, "message": message, "data": {"error": error, "text": text, "process_l": int(process_l), "process_r": int(process_r), "process_all": int(process_all)}}
+
+
+async def _append_pump_session_summary_context(
+    request: Request,
+    body: dict[str, Any],
+    data: dict[str, Any],
+    *,
+    conversation_id: str,
+    context_text: str,
+) -> dict[str, Any]:
+    conversation_id = conversation_id.strip()
+    context_text = context_text.strip()
+    if not context_text:
+        return {"appended": False, "reason": "missing_context_text"}
+    if not conversation_id:
+        return {"appended": False, "reason": "missing_conversation_id"}
+
+    if _append_local_agent_context(request, conversation_id=conversation_id, context_text=context_text):
+        return {"appended": True, "target": "local_runtime"}
+
+    forwarded = await _forward_client_event_context(
+        conversation_id=conversation_id,
+        context_text=context_text,
+        user_id=str(body.get("user_id") or ""),
+        ended_at=str((data.get("session") or {}).get("ended_at") or ""),
+    )
+    if forwarded.get("appended"):
+        return forwarded
+    return forwarded
+
+
+def _pump_session_conversation_id(body: dict[str, Any]) -> str:
+    return str(
+        body.get("thread_id")
+        or body.get("threadId")
+        or body.get("conversation_id")
+        or body.get("conversationId")
+        or ""
+    ).strip()
+
+
+def _append_local_agent_context(request: Request, *, conversation_id: str, context_text: str) -> bool:
+    runtime = getattr(request.app.state, "runtime", None)
+    get_session = getattr(runtime, "get_session", None)
+    if not callable(get_session):
+        return False
+    try:
+        session = get_session(conversation_id)
+        context_state = getattr(session, "context_state", None)
+        events = getattr(context_state, "client_events", None)
+        if not isinstance(events, list):
+            return False
+        if context_text not in events:
+            events.append(context_text)
+            context_state.client_events = events[-10:]
+        return True
+    except Exception:
+        return False
+
+
+async def _forward_client_event_context(
+    *,
+    conversation_id: str,
+    context_text: str,
+    user_id: str,
+    ended_at: str,
+) -> dict[str, Any]:
+    url = (os.getenv("MOMCOZY_AGENT_CLIENT_EVENT_URL") or "http://127.0.0.1:8768/api/client-event").strip()
+    if not url or url.lower() in {"none", "disabled", "off"}:
+        return {"appended": False, "reason": "context_forwarding_disabled"}
+    try:
+        import httpx
+    except ImportError:
+        return {"appended": False, "reason": "httpx_unavailable"}
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=0.5, read=1.0, write=0.5, pool=0.5)) as client:
+            response = await client.post(
+                url,
+                json={
+                    "thread_id": conversation_id,
+                    "conversation_id": conversation_id,
+                    "event_type": "pump_session_ended",
+                    "label": "本次吸奶小结",
+                    "occurred_at": ended_at,
+                    "metadata": {
+                        "user_id": user_id,
+                        "source": "pump_session_summary",
+                        "context_text": context_text,
+                    },
+                },
+            )
+        if 200 <= response.status_code < 300:
+            return {"appended": True, "target": "client_event_forward", "status_code": response.status_code}
+        return {"appended": False, "reason": "client_event_forward_failed", "status_code": response.status_code}
+    except Exception as exc:
+        return {"appended": False, "reason": "client_event_forward_error", "error": type(exc).__name__}
 
 
 def _build_notify_query_response(*, status: int, message: str, error: int, notify_list: Any = None) -> dict[str, Any]:
