@@ -80,6 +80,62 @@ def get_today_summary(
     )
 
 
+def get_today_milk_activity_summary(*, user_id: str, target_date: str | None = None) -> ServiceResult:
+    uid = norm_text(user_id)
+    date = _target_date(target_date)
+    if not uid:
+        return error_result("missing_user_id", "缺少 user_id，无法查看今日奶量记录。")
+
+    pumping_summary = _pumping_summary(uid, date)
+    feeding_summary = _feeding_summary(uid, date)
+    return ok_result(
+        "today_milk_activity_loaded",
+        (
+            f"{date} 喂养 {feeding_summary['feeding_count']} 次，"
+            f"吸奶 {pumping_summary['pumping_count']} 次。"
+        ),
+        {
+            "user_id": uid,
+            "target_date": date,
+            "pumping_summary": pumping_summary,
+            "feeding_summary": feeding_summary,
+        },
+    )
+
+
+def get_today_daily_summary_fallback(*, user_id: str, target_date: str | None = None) -> ServiceResult:
+    uid = norm_text(user_id)
+    date = _target_date(target_date)
+    if not uid:
+        return error_result("missing_user_id", "缺少 user_id，无法生成今日日结。")
+
+    pumping = _pumping_summary(uid, date)
+    feeding = _feeding_summary(uid, date)
+    feeding_count = to_int(feeding.get("feeding_count"), 0)
+    nursing_count = to_int(feeding.get("breastfeeding_count"), 0)
+    bottle_count = to_int(feeding.get("bottle_count"), 0)
+    pumped_ml = float(pumping.get("total_ml") or 0.0)
+    bottle_ml = float(feeding.get("total_bottle_ml") or 0.0)
+    message = [
+        f"今日喂养 {feeding_count} 次｜亲喂 {nursing_count} 次｜瓶喂 {bottle_count} 次｜瓶喂 {_format_number(bottle_ml)} ml",
+        f"吸奶 {to_int(pumping.get('pumping_count'), 0)} 次｜吸奶总量 {_format_number(pumped_ml)} ml",
+        "今日记录较少，暂无法完整判断节律" if feeding_count <= 1 else "今日喂养记录已同步，建议结合身体感受观察",
+        "暂未发现明确风险提示",
+        "建议继续记录吸奶和亲喂时间，便于明天判断节律",
+    ]
+    return ok_result(
+        "today_daily_summary_fallback_loaded",
+        "\n".join(message),
+        {
+            "user_id": uid,
+            "target_date": date,
+            "message": message,
+            "pumping_summary": pumping,
+            "feeding_summary": feeding,
+        },
+    )
+
+
 def shift_today_tasks(
     *,
     user_id: str,
@@ -278,16 +334,20 @@ def _feeding_summary(user_id: str, target_date: str) -> dict[str, Any]:
     )
     total_bottle = 0.0
     breastfeeding_count = 0
+    bottle_count = 0
     type_counts: dict[str, int] = {}
     for row in rows:
         feed_type = norm_text(row.get("feed_type")) or "unknown"
         type_counts[feed_type] = type_counts.get(feed_type, 0) + 1
-        total_bottle += float(row.get("feed_milk_volum") or 0.0)
         if "亲喂" in feed_type or "breast" in feed_type.lower():
             breastfeeding_count += 1
+        else:
+            bottle_count += 1
+            total_bottle += float(row.get("feed_milk_volum") or 0.0)
     return {
         "feeding_count": len(rows),
         "breastfeeding_count": breastfeeding_count,
+        "bottle_count": bottle_count,
         "total_bottle_ml": round(total_bottle, 1),
         "type_counts": type_counts,
     }
@@ -329,3 +389,8 @@ def _minute_of_day(value: Any) -> int | None:
 
 def _db_time(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _format_number(value: float) -> str:
+    rounded = round(float(value or 0), 1)
+    return str(int(rounded)) if rounded.is_integer() else str(rounded)

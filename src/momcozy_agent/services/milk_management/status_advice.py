@@ -7,6 +7,7 @@ from typing import Any
 
 from ...config import load_project_env
 from .. import data_store
+from .assessment import evaluate_milk_status
 from .feeding import estimate_breastfeeding_milk
 
 
@@ -21,10 +22,14 @@ SIMPLE_STATUS_ADVICE_PROMPT = """
 - 有记录时，只基于记录做轻量总结和下一步建议。
 - 记录少时，可以提醒建议仅供参考，并鼓励继续记录。
 - 如果近7天没有任何吸奶、亲喂或喂奶记录：根据 delivery_date/postpartum_days 给通用建议，并温和提醒养成记录习惯。
+- 如果输入包含 analysis_normality：advice 必须和 result 方向一致。
+- 当 result=true：以保持节奏和继续观察为主，不要求增加、减少或明显改进。
+- 当 result=false：必须根据 failed_metrics/reason 指出具体可调整方向，不能两条都只夸奖。
+- lactation_advice 只关注泌乳/吸奶/亲喂排乳方向；feeding_advice 只关注宝宝喂养频次/摄入记录方向。
 """.strip()
 
 
-def generate_status_advice(*, user_id: str, days: int = 7) -> dict[str, str] | None:
+def generate_status_advice(*, user_id: str, days: int = 7, normality: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Generate both lactation and feeding advice for status creation."""
 
     uid = str(user_id or "").strip()
@@ -35,7 +40,7 @@ def generate_status_advice(*, user_id: str, days: int = 7) -> dict[str, str] | N
     if not context:
         return None
 
-    payload = _build_llm_payload(context)
+    payload = _build_llm_payload(context, normality=normality)
     generated = _request_llm_status_advice(payload)
     if not generated:
         return None
@@ -44,13 +49,40 @@ def generate_status_advice(*, user_id: str, days: int = 7) -> dict[str, str] | N
     return generated
 
 
-def _build_llm_payload(context: dict[str, Any]) -> dict[str, Any]:
+def evaluate_status_advice_normality(*, user_id: str, days: int = 7, min_valid_days: int = 3) -> dict[str, Any]:
+    uid = str(user_id or "").strip()
+    if not uid:
+        return _normality_result(False, False, "missing_user_id", days=[], window_days=days, min_valid_days=min_valid_days)
+
+    assessment = evaluate_milk_status(user_id=uid, window_days=days, include_today=False)
+    data = assessment.get("data") if isinstance(assessment.get("data"), dict) else {}
+    milk_normality = data.get("milk_normality") if isinstance(data.get("milk_normality"), dict) else {}
+    day_items = milk_normality.get("days") if isinstance(milk_normality.get("days"), list) else []
+    if not assessment.get("ok"):
+        return _normality_result(False, False, "assessment_failed", days=day_items, window_days=days, min_valid_days=min_valid_days)
+
+    valid_days = [item for item in day_items if isinstance(item, dict) and item.get("ok") is True]
+    if len(valid_days) < min_valid_days:
+        return _normality_result(False, False, "insufficient_minimum_valid_days", days=day_items, window_days=days, min_valid_days=min_valid_days)
+
+    lactation_normal = _lactation_normal_for_days(valid_days)
+    feeding_normal = _feeding_normal_for_days(valid_days)
+    if not lactation_normal:
+        reason = "lactation_out_of_range"
+    elif not feeding_normal:
+        reason = "feeding_out_of_range"
+    else:
+        reason = "normal"
+    return _normality_result(lactation_normal, feeding_normal, reason, days=valid_days, window_days=days, min_valid_days=min_valid_days)
+
+
+def _build_llm_payload(context: dict[str, Any], *, normality: dict[str, Any] | None = None) -> dict[str, Any]:
     user_profile = context.get("user_profile") if isinstance(context.get("user_profile"), dict) else {}
     infant_profile = context.get("infant_profile") if isinstance(context.get("infant_profile"), dict) else {}
     pumping_records = context.get("pumping_records") if isinstance(context.get("pumping_records"), list) else []
     feeding_records = context.get("feeding_records") if isinstance(context.get("feeding_records"), list) else []
 
-    return {
+    payload = {
         "user_id": str(user_profile.get("user_id") or infant_profile.get("user_id") or ""),
         "delivery_date": str(user_profile.get("delivery_date") or infant_profile.get("birth_date") or ""),
         "postpartum_days": _days_since(user_profile.get("delivery_date") or infant_profile.get("birth_date")),
@@ -69,6 +101,77 @@ def _build_llm_payload(context: dict[str, Any]) -> dict[str, Any]:
         ),
         "feeding_summary": _summarize_feeding(feeding_records),
     }
+    if isinstance(normality, dict):
+        payload["analysis_normality"] = normality
+    return payload
+
+
+def _lactation_normal_for_days(day_items: list[dict[str, Any]]) -> bool:
+    return all(item.get("normal") is True for item in day_items)
+
+
+def _feeding_normal_for_days(day_items: list[dict[str, Any]]) -> bool:
+    for item in day_items:
+        reference = item.get("frequency_reference") if isinstance(item.get("frequency_reference"), dict) else {}
+        p25 = _int(reference.get("p25"), 0)
+        p75 = _int(reference.get("p75"), 0)
+        feeding_count = _int(item.get("feeding_count_total"), 0)
+        if p25 <= 0 or p75 <= 0 or feeding_count < p25 or feeding_count > p75:
+            return False
+    return True
+
+
+def _normality_result(lactation_normal: bool, feeding_normal: bool, reason: str, *, days: list[Any], window_days: int = 7, min_valid_days: int = 3) -> dict[str, Any]:
+    metrics = [_normality_day_metrics(item) for item in days if isinstance(item, dict)]
+    failed_metrics = _failed_metrics(lactation_normal, feeding_normal, reason, metrics)
+    return {
+        "result": bool(lactation_normal and feeding_normal),
+        "lactation_normal": bool(lactation_normal),
+        "feeding_normal": bool(feeding_normal),
+        "reason": reason,
+        "failed_metrics": failed_metrics,
+        "window_days": int(window_days),
+        "min_valid_days": int(min_valid_days),
+        "include_today": False,
+        "evaluated_days": len(days),
+        "metrics": metrics,
+    }
+
+
+def _normality_day_metrics(item: dict[str, Any]) -> dict[str, Any]:
+    reference = item.get("frequency_reference") if isinstance(item.get("frequency_reference"), dict) else {}
+    return {
+        "date": str(item.get("date") or ""),
+        "normal": item.get("normal"),
+        "status": str(item.get("status") or ""),
+        "rule_hit": str(item.get("rule_hit") or ""),
+        "pumping_count": _int(item.get("pumping_count"), 0),
+        "breastfeeding_count": _int(item.get("breastfeeding_count"), 0),
+        "feeding_count_total": _int(item.get("feeding_count_total"), 0),
+        "estimated_daily_milk_ml": _float(item.get("estimated_daily_milk_ml")),
+        "feeding_frequency_p25": _int(reference.get("p25"), 0),
+        "feeding_frequency_p75": _int(reference.get("p75"), 0),
+    }
+
+
+def _failed_metrics(lactation_normal: bool, feeding_normal: bool, reason: str, metrics: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    failed: list[dict[str, Any]] = []
+    if not lactation_normal:
+        failed.append({"type": "lactation", "reason": reason, "days": [item for item in metrics if item.get("normal") is not True]})
+    if not feeding_normal:
+        failed.append(
+            {
+                "type": "feeding",
+                "reason": reason,
+                "days": [
+                    item
+                    for item in metrics
+                    if item.get("feeding_frequency_p25") and item.get("feeding_frequency_p75")
+                    and not (item["feeding_frequency_p25"] <= item.get("feeding_count_total", 0) <= item["feeding_frequency_p75"])
+                ],
+            }
+        )
+    return failed
 
 
 def _summarize_pumping(records: list[Any], *, user_id: str, as_of_time: Any = None) -> dict[str, Any]:

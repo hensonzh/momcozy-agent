@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import os
 import re
@@ -20,16 +21,36 @@ from .responses import (
     pump_threshold_response,
 )
 from ..services import data_store
+from ..services.milk_process.breast_pump_FSM_v3 import LogDrivenSessionManager
+from ..services.milk_management.daily_summary import create_daily_summary
 from ..services.milk_management.feeding import assess_feeding_demand_reference
-from ..services.milk_management.status_advice import generate_status_advice
-from ..services.paths import UPLOAD_ROOT, ensure_runtime_dirs
+from ..services.milk_management.status_advice import evaluate_status_advice_normality, generate_status_advice
+from ..services.paths import MILK_PROCESS_CONFIG_ROOT, MILK_PROCESS_LOG_ROOT, UPLOAD_ROOT, ensure_runtime_dirs
 from ..services.pump_session_summary import build_pump_session_summary
+from ..services.pump_process import (
+    PROCESS_ENERGY_LOWER_VALUE,
+    PROCESS_ENERGY_UPPER_VALUE,
+    PROCESS_REST_THRESHOLD,
+    append_pump_process_points,
+    build_pump_process_reply,
+    get_pump_process_reply_state,
+    validate_pump_process_payload,
+)
+from ..services.pump_workstate import (
+    build_pump_workstate_reply,
+    get_latest_pump_workstate_event,
+    get_pump_workstate_reply_state,
+    record_pump_workstate_update,
+    validate_pump_workstate_payload,
+)
 
 
 router = APIRouter()
-PROCESS_REST_THRESHOLD = 100
-PROCESS_ENERGY_UPPER_VALUE = 100
-PROCESS_ENERGY_LOWER_VALUE = 80
+_pump_process_data_lock = asyncio.Lock()
+_pump_process_data_session_manager = LogDrivenSessionManager(
+    json_dir=MILK_PROCESS_CONFIG_ROOT,
+    log_dir=MILK_PROCESS_LOG_ROOT,
+)
 
 
 async def _upload_image_to_openai(*, filename: str, body: bytes, mime_type: str) -> str:
@@ -92,14 +113,35 @@ async def upload_pump_workstate(request: Request) -> dict[str, Any]:
     if not isinstance(body, dict):
         return pump_reply_response(status=400, message="invalid request body", error=-1)
     try:
-        user_id, normalized = _validate_workstate_payload(body)
-        previous = data_store.record_workstate(user_id, normalized)
-        reply = _build_workstate_reply(normalized, previous)
+        is_valid, error_message, normalized = validate_pump_workstate_payload(body)
+        if not is_valid or normalized is None:
+            return pump_reply_response(status=400, message=error_message, error=-1)
+        previous_event = get_latest_pump_workstate_event(normalized["user_id"])
+        previous_reply_state = get_pump_workstate_reply_state(normalized["user_id"])
+        reply = build_pump_workstate_reply(
+            current_payload=normalized,
+            previous_event=previous_event,
+            previous_reply_state=previous_reply_state,
+        )
+        record_pump_workstate_update(
+            normalized,
+            reply_state=reply.get("updated_reply_state") if isinstance(reply.get("updated_reply_state"), dict) else {},
+            job_operation=reply.get("job_operation") if isinstance(reply.get("job_operation"), dict) else None,
+        )
     except ValueError as exc:
         return pump_reply_response(status=400, message=str(exc), error=-1)
     except Exception:
         return pump_reply_response(status=400, message="failed to process workstate", error=-1)
-    return pump_reply_response(status=200, message="success", error=0, **reply)
+    return pump_reply_response(
+        status=200,
+        message="success",
+        error=0,
+        need_reply=bool(reply.get("need_reply")),
+        output=str(reply.get("output", "") or ""),
+        reply_code=str(reply.get("reply_code", "") or ""),
+        reply_side=str(reply.get("reply_side", "") or ""),
+        direct_rich_text=reply.get("direct_rich_text") if isinstance(reply.get("direct_rich_text"), dict) else None,
+    )
 
 
 @router.post("/v1/pump/workstate/pending-replies")
@@ -129,15 +171,34 @@ async def upload_pump_process(request: Request) -> dict[str, Any]:
     if not isinstance(body, dict):
         return pump_reply_response(status=400, message="invalid request body", error=-1)
     try:
-        user_id, normalized = _validate_process_payload(body)
-        latest_workstate = data_store.latest_workstate(user_id)
-        data_store.record_pump_process(user_id, normalized)
-        reply = _build_process_reply(normalized, latest_workstate)
+        is_valid, error_message, normalized = validate_pump_process_payload(body)
+        if not is_valid or normalized is None:
+            return pump_reply_response(status=400, message=error_message, error=-1)
+        previous_reply_state = get_pump_process_reply_state(normalized["user_id"])
+        latest_workstate = get_latest_pump_workstate_event(normalized["user_id"])
+        reply = build_pump_process_reply(
+            current_payload=normalized,
+            previous_reply_state=previous_reply_state,
+            current_workstate_event=latest_workstate,
+        )
+        append_pump_process_points(
+            normalized,
+            reply_state=reply.get("updated_reply_state") if isinstance(reply.get("updated_reply_state"), dict) else {},
+        )
     except ValueError as exc:
         return pump_reply_response(status=400, message=str(exc), error=-1)
     except Exception:
         return pump_reply_response(status=400, message="failed to process pump data", error=-1)
-    return pump_reply_response(status=200, message="success", error=0, **reply)
+    return pump_reply_response(
+        status=200,
+        message="success",
+        error=0,
+        need_reply=bool(reply.get("need_reply")),
+        output=str(reply.get("output", "") or ""),
+        reply_code=str(reply.get("reply_code", "") or ""),
+        reply_side=str(reply.get("reply_side", "") or ""),
+        direct_rich_text=reply.get("direct_rich_text") if isinstance(reply.get("direct_rich_text"), dict) else None,
+    )
 
 
 @router.post("/v1/pump/process/data")
@@ -148,10 +209,15 @@ async def calculate_pump_process_data(request: Request) -> dict[str, Any]:
     except Exception:
         return _pump_process_data_response(status=400, message="invalid request body", error=-1, text="invalid request body")
     try:
-        _, left, right = _validate_process_data_payload(body)
-        process_l = _calculate_sensor_process(left)
-        process_r = _calculate_sensor_process(right)
-        process_all = _clamp_process((process_l + process_r) / 2)
+        _validate_process_data_payload(body)
+        async with _pump_process_data_lock:
+            result = await _pump_process_data_session_manager.process(body)
+        if int(result.get("error", 0) or 0) == -1:
+            text = str(result.get("text", "") or "")
+            return _pump_process_data_response(status=400, message=text, error=-1, text=text)
+        process_l = int(result.get("process_l", 0) or 0)
+        process_r = int(result.get("process_r", 0) or 0)
+        process_all = int(result.get("process_all", 0) or 0)
     except ValueError as exc:
         return _pump_process_data_response(status=400, message=str(exc), error=-1, text=str(exc))
     except Exception:
@@ -402,6 +468,52 @@ async def create_status_endpoint(request: Request) -> dict[str, Any]:
     ):
         return _basic_error_response()
     return _basic_error_response(error=0)
+
+
+
+@router.post("/v1/analysis/create")
+async def create_analysis_endpoint(request: Request) -> dict[str, Any]:
+    verify_api_key(request)
+    body = await _json_body_or_error(request, basic=True)
+    if not _valid_analysis_payload(body):
+        return _analysis_create_response(error=-1, result=False, message="invalid request body")
+    uid = str(body.get("user_id") or "").strip()
+    analysis_type = str(body.get("type") or "").strip()
+    if not uid:
+        return _analysis_create_response(error=-1, result=False, message="user_id is required")
+    if analysis_type == "mom-baby":
+        normality = evaluate_status_advice_normality(user_id=uid)
+        advice = generate_status_advice(user_id=uid, normality=normality)
+        if not advice:
+            return _analysis_create_response(error=-1, result=False, message="failed to generate mom baby advice")
+        lactation_advice = str(advice.get("lactation_advice") or "").strip()
+        feeding_advice = str(advice.get("feeding_advice") or "").strip()
+        if not data_store.update_user_profile_advice(
+            user_id=uid,
+            lactation_advice=lactation_advice,
+            feeding_advice=feeding_advice,
+        ):
+            return _analysis_create_response(error=-1, result=False, message="failed to update mom baby advice")
+        message = [
+            f"泌乳建议：{lactation_advice}",
+            f"喂养建议：{feeding_advice}",
+        ]
+        return _analysis_create_response(
+            error=0,
+            result=bool(normality.get("result") is True),
+            message=message,
+        )
+    if analysis_type == "daily_summary":
+        summary = create_daily_summary(user_id=uid)
+        if not summary.get("ok"):
+            return _analysis_create_response(error=-1, message=str(summary.get("summary") or "failed to generate daily summary"))
+        data = summary.get("data") if isinstance(summary.get("data"), dict) else {}
+        message = data.get("message") if isinstance(data.get("message"), list) else str(summary.get("summary") or "")
+        daily_summary_text = "\n".join(str(item) for item in message) if isinstance(message, list) else str(message)
+        if not data_store.update_user_profile_daily_summary(user_id=uid, daily_summary=daily_summary_text):
+            return _analysis_create_response(error=-1, message="failed to update daily summary")
+        return _analysis_create_response(error=0, message=message)
+    return _analysis_create_response(error=-1, result=False, message="unsupported type")
 
 
 @router.get("/v1/mom-baby/today/query")
@@ -1255,6 +1367,18 @@ def _pump_query_response(*, error: int, pump_milk_list: list[dict[str, Any]] | N
 
 def _basic_error_response(*, error: int = -1) -> dict[str, Any]:
     return {"error": int(error)}
+
+
+def _valid_analysis_payload(payload: Any) -> bool:
+    return isinstance(payload, dict) and set(payload.keys()) == {"user_id", "type"}
+
+
+def _analysis_create_response(*, error: int, message: Any, result: bool | None = None) -> dict[str, Any]:
+    response: dict[str, Any] = {"error": int(error)}
+    if result is not None:
+        response["result"] = bool(result)
+    response["message"] = message
+    return response
 
 
 def _growth_query_response(
