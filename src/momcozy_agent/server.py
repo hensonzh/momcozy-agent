@@ -341,9 +341,12 @@ def main() -> None:
     except ImportError as exc:
         raise RuntimeError("uvicorn is not installed. Install the 'server' optional dependencies.") from exc
 
+    host = os.getenv("CHAT_HOST", "127.0.0.1")
+    port = int(os.getenv("CHAT_PORT", "8768"))
+
     application = create_app(runtime=make_runtime())
-    print(f"Momcozy agent test UI: http://{HOST}:{PORT}")
-    uvicorn.run(application, host=HOST, port=PORT, log_level="warning")
+    print(f"Momcozy agent test UI: http://{host}:{port}")
+    uvicorn.run(application, host=host, port=port, log_level="warning")
 
 
 async def _read_json_payload(request: Any) -> dict[str, Any]:

@@ -21,6 +21,8 @@ def main() -> None:
     from momcozy_agent.server import main as run_chat_server
 
     load_project_env(ROOT / ".env")
+    CHAT_HOST = os.getenv("CHAT_HOST", "127.0.0.1")
+    CHAT_PORT = int(os.getenv("CHAT_PORT", "8768"))
     os.environ.setdefault("MOMCOZY_CHAT_SSE_URL", f"http://{CHAT_HOST}:{CHAT_PORT}/api/ag-ui")
 
     host = os.getenv("ENTRY_HOST", "0.0.0.0")
