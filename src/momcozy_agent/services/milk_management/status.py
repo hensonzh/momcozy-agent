@@ -6,7 +6,7 @@ from typing import Any
 from .. import data_store
 from .feeding import assess_feeding_demand_reference
 from .schemas import ServiceResult, error_result, norm_text, ok_result, parse_datetime, to_int
-
+######################################已废弃，后续会删除######################################
 STATUS_SECTIONS = {"all", "overview", "today", "trend", "growth", "tasks"}
 
 

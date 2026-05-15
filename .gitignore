@@ -17,3 +17,6 @@ logs/
 dist/
 build/
 *.egg-info/
+
+*.sh
+data/
