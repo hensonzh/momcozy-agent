@@ -480,7 +480,7 @@ async def create_analysis_endpoint(request: Request) -> dict[str, Any]:
     analysis_type = str(body.get("type") or "").strip()
     if not uid:
         return _analysis_create_response(error=-1, result=False, message="user_id is required")
-    if analysis_type == "mom-baby":
+    if analysis_type == "mom_baby":
         normality = evaluate_status_advice_normality(user_id=uid)
         advice = generate_status_advice(user_id=uid, normality=normality)
         if not advice:
@@ -500,7 +500,7 @@ async def create_analysis_endpoint(request: Request) -> dict[str, Any]:
         return _analysis_create_response(
             error=0,
             result=bool(normality.get("result") is True),
-            message=message,
+            message="**泌乳及喂养分析**  \r" + "  \r".join(message),
         )
     if analysis_type == "daily_summary":
         summary = create_daily_summary(user_id=uid)
@@ -511,7 +511,7 @@ async def create_analysis_endpoint(request: Request) -> dict[str, Any]:
         daily_summary_text = "\n".join(str(item) for item in message) if isinstance(message, list) else str(message)
         if not data_store.update_user_profile_daily_summary(user_id=uid, daily_summary=daily_summary_text):
             return _analysis_create_response(error=-1, message="failed to update daily summary")
-        return _analysis_create_response(error=0, message=message)
+        return _analysis_create_response(error=0, message= "**每日小结**  \r" + "  \r".join(message))
     return _analysis_create_response(error=-1, result=False, message="unsupported type")
 
 
@@ -1483,10 +1483,10 @@ def _valid_analysis_payload(payload: Any) -> bool:
 
 
 def _analysis_create_response(*, error: int, message: Any, result: bool | None = None) -> dict[str, Any]:
-    response: dict[str, Any] = {"error": int(error)}
+    response: dict[str, Any] = {"error": int(error), "data": {}}
     if result is not None:
-        response["result"] = bool(result)
-    response["message"] = message
+        response["data"]["result"] = bool(result)
+    response["data"]["message"] = message
     return response
 
 
