@@ -54,12 +54,16 @@ def run_finished_event(thread_id: str, run_id: str, result: Any | None = None) -
     return event
 
 
-def run_error_event(message: str, code: str | None = None) -> AgUiEvent:
+def run_error_event(message: str, code: str | None = None, *, thread_id: str | None = None, run_id: str | None = None) -> AgUiEvent:
     event: AgUiEvent = {
         "type": "RUN_ERROR",
         "timestamp": _timestamp_ms(),
         "message": message,
     }
+    if thread_id:
+        event["thread_id"] = thread_id
+    if run_id:
+        event["run_id"] = run_id
     if code:
         event["code"] = code
     return event
@@ -183,6 +187,50 @@ def tool_call_result_event(
     return event
 
 
+def artifact_created_event(
+    *,
+    artifact_id: str,
+    artifact_type: str,
+    tool_call_id: str,
+    tool_call_name: str,
+    artifact: dict[str, Any],
+    status: str = "ready",
+) -> AgUiEvent:
+    return {
+        "type": "ARTIFACT_CREATED",
+        "timestamp": _timestamp_ms(),
+        "artifact_id": artifact_id,
+        "artifact_type": artifact_type,
+        "tool_call_id": tool_call_id,
+        "tool_call_name": tool_call_name,
+        "status": status,
+        "artifact": artifact,
+    }
+
+
+def confirmation_required_event(
+    *,
+    confirmation_id: str,
+    tool_call_id: str,
+    tool_call_name: str,
+    title: str,
+    message: str = "",
+    artifact_id: str | None = None,
+) -> AgUiEvent:
+    event: AgUiEvent = {
+        "type": "CONFIRMATION_REQUIRED",
+        "timestamp": _timestamp_ms(),
+        "confirmation_id": confirmation_id,
+        "tool_call_id": tool_call_id,
+        "tool_call_name": tool_call_name,
+        "title": title,
+        "message": message,
+    }
+    if artifact_id:
+        event["artifact_id"] = artifact_id
+    return event
+
+
 def status_activity_snapshot_event(message_id: str, event: AgentEvent) -> AgUiEvent:
     return {
         "type": "ACTIVITY_SNAPSHOT",
@@ -233,9 +281,14 @@ def safe_tool_result(result: dict[str, Any]) -> dict[str, Any]:
     }
     tool_result = result.get("result")
     if isinstance(tool_result, dict):
-        for key in ("id", "skill_id", "status", "resource_id", "side_effect_performed"):
+        for key in ("id", "skill_id", "status", "resource_id", "side_effect_performed", "summary"):
             if key in tool_result:
                 safe[key] = tool_result[key]
+        tool_data = tool_result.get("data")
+        if isinstance(tool_data, dict):
+            for key in ("requires_confirmation", "requires_medical_confirmation", "confirmation_question"):
+                if key in tool_data:
+                    safe[key] = tool_data[key]
         if result.get("tool_name") == "ui_form_create" and isinstance(tool_result.get("form"), dict):
             safe["form"] = tool_result["form"]
         if result.get("tool_name") == "ui_card_create" and isinstance(tool_result.get("card"), dict):
@@ -251,6 +304,91 @@ def safe_tool_result(result: dict[str, Any]) -> dict[str, Any]:
     if isinstance(result.get("error"), dict):
         safe["error"] = result["error"]
     return safe
+
+
+def artifact_events_from_tool_result(
+    *,
+    tool_call_id: str,
+    tool_call_name: str,
+    safe_result: dict[str, Any],
+) -> list[AgUiEvent]:
+    events: list[AgUiEvent] = []
+    artifact_specs: list[tuple[str, str, dict[str, Any], str]] = []
+    if isinstance(safe_result.get("form"), dict):
+        artifact_specs.append(("form", str(safe_result["form"].get("id") or f"{tool_call_id}:form"), safe_result["form"], "ready"))
+    if isinstance(safe_result.get("card"), dict):
+        card = safe_result["card"]
+        artifact_type = str(card.get("card_type") or "card")
+        artifact_specs.append((artifact_type, str(card.get("id") or f"{tool_call_id}:card"), card, "ready"))
+    if isinstance(safe_result.get("ticket"), dict):
+        ticket = safe_result["ticket"]
+        artifact_specs.append(("support_ticket", str(ticket.get("draft_id") or f"{tool_call_id}:ticket"), ticket, "preview"))
+
+    for artifact_type, artifact_id, artifact, status in artifact_specs:
+        event = artifact_created_event(
+            artifact_id=artifact_id,
+            artifact_type=artifact_type,
+            tool_call_id=tool_call_id,
+            tool_call_name=tool_call_name,
+            artifact=artifact,
+            status=status,
+        )
+        if artifact_type == "support_ticket" and "submit_label" in safe_result:
+            event["submit_label"] = safe_result["submit_label"]
+        events.append(event)
+    return events
+
+
+def confirmation_event_from_tool_result(
+    *,
+    tool_call_id: str,
+    tool_call_name: str,
+    safe_result: dict[str, Any],
+) -> AgUiEvent | None:
+    if safe_result.get("ok") is False:
+        return None
+    artifact_id = _primary_artifact_id(tool_call_id, safe_result)
+    if tool_call_name == "support_ticket_draft_create" and isinstance(safe_result.get("ticket"), dict):
+        return confirmation_required_event(
+            confirmation_id=f"{tool_call_id}:confirm",
+            tool_call_id=tool_call_id,
+            tool_call_name=tool_call_name,
+            artifact_id=artifact_id,
+            title="请确认售后工单",
+            message="工单仍是草稿，确认后才会提交。",
+        )
+    if safe_result.get("requires_confirmation") is True:
+        title = _confirmation_title(tool_call_name, safe_result)
+        message = str(safe_result.get("confirmation_question") or safe_result.get("summary") or "").strip()
+        return confirmation_required_event(
+            confirmation_id=f"{tool_call_id}:confirm",
+            tool_call_id=tool_call_id,
+            tool_call_name=tool_call_name,
+            artifact_id=artifact_id,
+            title=title,
+            message=message,
+        )
+    return None
+
+
+def _primary_artifact_id(tool_call_id: str, safe_result: dict[str, Any]) -> str | None:
+    if isinstance(safe_result.get("form"), dict):
+        return str(safe_result["form"].get("id") or f"{tool_call_id}:form")
+    if isinstance(safe_result.get("card"), dict):
+        return str(safe_result["card"].get("id") or f"{tool_call_id}:card")
+    if isinstance(safe_result.get("ticket"), dict):
+        return str(safe_result["ticket"].get("draft_id") or f"{tool_call_id}:ticket")
+    return None
+
+
+def _confirmation_title(tool_name: str, safe_result: dict[str, Any]) -> str:
+    if tool_name == "milk_plan_preview":
+        if safe_result.get("requires_medical_confirmation"):
+            return "需要先确认健康边界"
+        return "请确认奶量计划草稿"
+    if tool_name == "milk_calendar_change_preview":
+        return "请确认日程调整"
+    return "请确认后继续"
 
 
 def _timestamp_ms() -> int:
@@ -353,7 +491,7 @@ def run_agent_loop(
         )
     except Exception as exc:
         _emit_event(on_event, "failed", "Model request failed.", _error_metadata(exc), on_ag_ui_event, ag_ui_status_message_id)
-        _emit_ag_ui_event(on_ag_ui_event, run_error_event(str(exc), type(exc).__name__))
+        _emit_ag_ui_event(on_ag_ui_event, run_error_event(str(exc), type(exc).__name__, thread_id=ag_ui_thread_id, run_id=ag_ui_run_id))
         raise
 
     for round_index in range(max_tool_rounds):
@@ -429,6 +567,7 @@ def run_agent_loop(
                 if skill_id not in loaded_skill_ids:
                     loaded_skill_ids.append(skill_id)
             _record_loaded_reference(options.get("context_state"), tool_call["name"], result)
+            safe_result = safe_tool_result(result)
             _emit_ag_ui_event(
                 on_ag_ui_event,
                 tool_call_result_event(
@@ -441,6 +580,19 @@ def run_agent_loop(
                     item_id=tool_call.get("item_id"),
                 ),
             )
+            for artifact_event in artifact_events_from_tool_result(
+                tool_call_id=tool_call["call_id"],
+                tool_call_name=tool_call["name"],
+                safe_result=safe_result,
+            ):
+                _emit_ag_ui_event(on_ag_ui_event, artifact_event)
+            confirmation_event = confirmation_event_from_tool_result(
+                tool_call_id=tool_call["call_id"],
+                tool_call_name=tool_call["name"],
+                safe_result=safe_result,
+            )
+            if confirmation_event is not None:
+                _emit_ag_ui_event(on_ag_ui_event, confirmation_event)
             _emit_event(
                 on_event,
                 "tool_completed",
@@ -483,7 +635,7 @@ def run_agent_loop(
             )
         except Exception as exc:
             _emit_event(on_event, "failed", "Model request failed.", _error_metadata(exc, {"round": round_index + 1}), on_ag_ui_event, ag_ui_status_message_id)
-            _emit_ag_ui_event(on_ag_ui_event, run_error_event(str(exc), type(exc).__name__))
+            _emit_ag_ui_event(on_ag_ui_event, run_error_event(str(exc), type(exc).__name__, thread_id=ag_ui_thread_id, run_id=ag_ui_run_id))
             raise
 
     _emit_event(
@@ -494,7 +646,7 @@ def run_agent_loop(
         on_ag_ui_event,
         ag_ui_status_message_id,
     )
-    _emit_ag_ui_event(on_ag_ui_event, run_error_event("Agent loop reached the maximum tool rounds.", "MAX_TOOL_ROUNDS"))
+    _emit_ag_ui_event(on_ag_ui_event, run_error_event("Agent loop reached the maximum tool rounds.", "MAX_TOOL_ROUNDS", thread_id=ag_ui_thread_id, run_id=ag_ui_run_id))
     return response
 
 
@@ -812,7 +964,6 @@ def _emit_event(
     else:
         on_event(event)
     if on_ag_ui_event is not None and ag_ui_status_message_id:
-        on_ag_ui_event(status_activity_snapshot_event(ag_ui_status_message_id, event))
         on_ag_ui_event(status_custom_event(event))
 
 
@@ -832,28 +983,21 @@ def _tool_execution_phase(tool_name: str) -> AgentEventPhase:
 
 
 def _tool_call_message(tool_name: str) -> str:
-    if tool_name == "load_skill":
-        return "Selecting a service skill."
-    if tool_name == "read_skill_file":
-        return "Selecting a skill reference."
-    if tool_name == "run_approved_skill_script":
-        return "Requesting an approved skill script."
-    return "Selecting an application tool."
+    return "Selecting the next step."
 
 
 def _tool_execution_message(tool_name: str) -> str:
     if tool_name == "load_skill":
-        return "Loading service skill context."
+        return "Loading relevant context."
     if tool_name == "read_skill_file":
-        return "Reading an approved skill file."
+        return "Reading relevant information."
     if tool_name == "run_approved_skill_script":
-        return "Running an approved skill script."
-    return "Executing an application tool."
+        return "Running a processing step."
+    return "Processing relevant information."
 
 
 def _tool_completed_message(tool_name: str, ok: bool) -> str:
-    status = "completed" if ok else "failed"
-    return f"Tool {status}: {tool_name}."
+    return "Step completed." if ok else "Step failed."
 
 
 def _tool_result_metadata(round_index: int, tool_name: str, result: dict[str, Any]) -> dict[str, Any]:

@@ -141,6 +141,13 @@ class AgUiEvent(TypedDict, total=False):
     role: str
     name: str
     value: Any
+    artifact_id: str
+    artifact_type: str
+    artifact: Any
+    confirmation_id: str
+    title: str
+    status: str
+    submit_label: str
 
 
 AgUiEventHandler = Callable[[AgUiEvent], None]

@@ -1,5 +1,7 @@
 from .agents import (
+    artifact_created_event,
     build_agent_request,
+    confirmation_required_event,
     default_ag_ui_thread_id,
     new_ag_ui_run_id,
     run_agent_loop,
@@ -49,6 +51,7 @@ __all__ = [
     "AgentEventPhase",
     "AgUiEvent",
     "AgUiEventHandler",
+    "artifact_created_event",
     "BabyProfileSummary",
     "BuildAgentRequestOptions",
     "FUNCTION_TOOLS",
@@ -63,6 +66,7 @@ __all__ = [
     "UserProfileSummary",
     "build_agent_request",
     "build_request_context",
+    "confirmation_required_event",
     "default_ag_ui_thread_id",
     "execute_business_tool",
     "execute_tool",

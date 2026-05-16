@@ -313,7 +313,7 @@ async def stream_ag_ui_events(
             if pending_run_finished:
                 send_event(pending_run_finished)
         except Exception as exc:
-            send_event(run_error_event(str(exc), type(exc).__name__))
+            send_event(run_error_event(str(exc), type(exc).__name__, thread_id=str(thread_id), run_id=str(run_id)))
         finally:
             push(sentinel)
 
