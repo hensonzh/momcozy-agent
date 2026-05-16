@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import StreamingResponse
 
 from .auth import verify_api_key
@@ -159,32 +159,31 @@ async def calculate_pump_process_data(request: Request) -> dict[str, Any]:
     return _pump_process_data_response(status=200, message="success", error=0, process_l=process_l, process_r=process_r, process_all=process_all)
 
 
-@router.post("/v1/pump/session-summary")
-async def create_pump_session_summary(request: Request) -> dict[str, Any]:
-    verify_api_key(request)
-    body = await _json_body_or_error(request, basic=True)
-    if not isinstance(body, dict):
-        return {"status": 400, "message": "invalid request body", "data": {"error": -1}}
-    conversation_id = _pump_session_conversation_id(body)
-    if not conversation_id:
-        return {"status": 400, "message": "conversation_id is required", "data": {"error": -1, "message": "conversation_id is required"}}
-    result = build_pump_session_summary(body)
-    data = result.get("data") if isinstance(result.get("data"), dict) else {"error": -1}
-    if not result.get("ok"):
-        return {
-            "status": 400,
-            "message": str(data.get("message") or result.get("status") or "failed"),
-            "data": data,
-        }
-    context_status = await _append_pump_session_summary_context(
-        request,
-        body,
-        data,
-        conversation_id=conversation_id,
-        context_text=str(result.get("context_text") or ""),
-    )
-    data["context"] = context_status
-    return {"status": 200, "message": "success", "data": data}
+@router.websocket("/v1/pump/session-summary")
+async def create_pump_session_summary_ws(websocket: WebSocket) -> None:
+    if not _verify_websocket_api_key(websocket):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    await websocket.accept()
+    try:
+        try:
+            raw_first = await websocket.receive_text()
+        except WebSocketDisconnect:
+            return
+
+        try:
+            body = json.loads(raw_first or "{}")
+        except json.JSONDecodeError:
+            await websocket.send_json(_pump_session_summary_error("invalid request body"))
+            return
+
+        response = await _create_pump_session_summary_response(websocket, body)
+        await websocket.send_json(response)
+    except WebSocketDisconnect:
+        return
+    finally:
+        await _safe_close_websocket(websocket)
 
 
 @router.post("/v1/pump/threshold/upload")
@@ -916,8 +915,40 @@ def _pump_process_data_response(*, status: int, message: str, error: int, text: 
     return {"status": status, "message": message, "data": {"error": error, "text": text, "process_l": int(process_l), "process_r": int(process_r), "process_all": int(process_all)}}
 
 
+async def _create_pump_session_summary_response(connection: Any, body: Any) -> dict[str, Any]:
+    if not isinstance(body, dict):
+        return _pump_session_summary_error("invalid request body")
+
+    conversation_id = _pump_session_conversation_id(body)
+    if not conversation_id:
+        return _pump_session_summary_error("conversation_id is required")
+
+    result = build_pump_session_summary(body)
+    data = result.get("data") if isinstance(result.get("data"), dict) else {"error": -1}
+    if not result.get("ok"):
+        return {
+            "status": 400,
+            "message": str(data.get("message") or result.get("status") or "failed"),
+            "data": data,
+        }
+
+    context_status = await _append_pump_session_summary_context(
+        connection,
+        body,
+        data,
+        conversation_id=conversation_id,
+        context_text=str(result.get("context_text") or ""),
+    )
+    data["context"] = context_status
+    return {"status": 200, "message": "success", "data": data}
+
+
+def _pump_session_summary_error(message: str) -> dict[str, Any]:
+    return {"status": 400, "message": message, "data": {"error": -1, "message": message}}
+
+
 async def _append_pump_session_summary_context(
-    request: Request,
+    connection: Any,
     body: dict[str, Any],
     data: dict[str, Any],
     *,
@@ -931,7 +962,7 @@ async def _append_pump_session_summary_context(
     if not conversation_id:
         return {"appended": False, "reason": "missing_conversation_id"}
 
-    if _append_local_agent_context(request, conversation_id=conversation_id, context_text=context_text):
+    if _append_local_agent_context(connection, conversation_id=conversation_id, context_text=context_text):
         return {"appended": True, "target": "local_runtime"}
 
     forwarded = await _forward_client_event_context(
@@ -955,8 +986,9 @@ def _pump_session_conversation_id(body: dict[str, Any]) -> str:
     ).strip()
 
 
-def _append_local_agent_context(request: Request, *, conversation_id: str, context_text: str) -> bool:
-    runtime = getattr(request.app.state, "runtime", None)
+def _append_local_agent_context(connection: Any, *, conversation_id: str, context_text: str) -> bool:
+    app = getattr(connection, "app", None)
+    runtime = getattr(getattr(app, "state", None), "runtime", None)
     get_session = getattr(runtime, "get_session", None)
     if not callable(get_session):
         return False
@@ -972,6 +1004,37 @@ def _append_local_agent_context(request: Request, *, conversation_id: str, conte
         return True
     except Exception:
         return False
+
+
+def _verify_websocket_api_key(websocket: WebSocket) -> bool:
+    expected = (os.getenv("ENTRY_API_KEY") or "").strip()
+    if not expected:
+        return False
+
+    query_token = (websocket.query_params.get("token") or "").strip()
+    if query_token and query_token == expected:
+        return True
+
+    auth_header = websocket.headers.get("authorization") or ""
+    if auth_header.startswith("Bearer "):
+        header_token = auth_header[7:].strip()
+        if header_token and header_token == expected:
+            return True
+
+    protocol_header = websocket.headers.get("sec-websocket-protocol") or ""
+    for fragment in protocol_header.split(","):
+        token = fragment.strip()
+        if token and token == expected:
+            return True
+
+    return False
+
+
+async def _safe_close_websocket(websocket: WebSocket) -> None:
+    try:
+        await websocket.close()
+    except Exception:
+        pass
 
 
 async def _forward_client_event_context(

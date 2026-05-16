@@ -61,7 +61,7 @@ class PumpSessionSummaryTests(unittest.TestCase):
         self.assertIsNone(result["data"]["session"]["total_milk_ml"])
         self.assertNotIn("total_milk_ml", result["context_text"])
 
-    def test_api_response_hides_internal_agent_context(self) -> None:
+    def test_websocket_response_hides_internal_agent_context(self) -> None:
         try:
             from fastapi.testclient import TestClient
 
@@ -77,30 +77,30 @@ class PumpSessionSummaryTests(unittest.TestCase):
             },
         ):
             client = TestClient(create_app())
-            response = client.post(
-                "/v1/pump/session-summary",
-                headers={"Authorization": "Bearer test-token"},
-                json={
-                    "user_id": "app-user",
-                    "conversation_id": "conv-1",
-                    "end_reason": "user-confirm",
-                    "duration_seconds": 1080,
-                    "ended_at": "2026-05-15T14:48:00+08:00",
-                    "process_all": 100,
-                    "left": {"milk_ml": 52},
-                    "right": {"milk_ml": 48},
-                },
-            )
+            with client.websocket_connect("/v1/pump/session-summary?token=test-token") as websocket:
+                websocket.send_json(
+                    {
+                        "user_id": "app-user",
+                        "conversation_id": "conv-1",
+                        "end_reason": "user-confirm",
+                        "duration_seconds": 1080,
+                        "ended_at": "2026-05-15T14:48:00+08:00",
+                        "process_all": 100,
+                        "left": {"milk_ml": 52},
+                        "right": {"milk_ml": 48},
+                    }
+                )
+                payload = websocket.receive_json()
 
-        self.assertEqual(response.status_code, 200)
-        data = response.json()["data"]
+        self.assertEqual(payload["status"], 200)
+        data = payload["data"]
         self.assertEqual(data["session"]["total_milk_ml"], 100)
         self.assertIn("总奶量约 100 ml", data["chat_message"]["content"])
         self.assertNotIn("agent_context_text", data)
         self.assertNotIn("agent_context_event", data)
         self.assertNotIn("agent_context_event", data["chat_message"]["cardData"])
 
-    def test_api_requires_conversation_id(self) -> None:
+    def test_websocket_requires_conversation_id(self) -> None:
         try:
             from fastapi.testclient import TestClient
 
@@ -116,19 +116,18 @@ class PumpSessionSummaryTests(unittest.TestCase):
             },
         ):
             client = TestClient(create_app())
-            response = client.post(
-                "/v1/pump/session-summary",
-                headers={"Authorization": "Bearer test-token"},
-                json={
-                    "user_id": "app-user",
-                    "end_reason": "user-confirm",
-                    "duration_seconds": 1080,
-                    "left": {"milk_ml": 52},
-                    "right": {"milk_ml": 48},
-                },
-            )
+            with client.websocket_connect("/v1/pump/session-summary?token=test-token") as websocket:
+                websocket.send_json(
+                    {
+                        "user_id": "app-user",
+                        "end_reason": "user-confirm",
+                        "duration_seconds": 1080,
+                        "left": {"milk_ml": 52},
+                        "right": {"milk_ml": 48},
+                    }
+                )
+                payload = websocket.receive_json()
 
-        payload = response.json()
         self.assertEqual(payload["status"], 400)
         self.assertEqual(payload["message"], "conversation_id is required")
         self.assertEqual(payload["data"]["error"], -1)
