@@ -37,6 +37,7 @@ def init_db() -> None:
                 delivery_date TEXT,
                 lactation_advice TEXT,
                 feeding_advice TEXT,
+                daily_summary TEXT,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -176,6 +177,18 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS pump_workstate_reply_state (
+                user_id TEXT PRIMARY KEY,
+                state_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS pump_process_reply_state (
+                user_id TEXT PRIMARY KEY,
+                state_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS uploaded_file (
                 file_id TEXT PRIMARY KEY,
                 original_name TEXT NOT NULL,
@@ -189,6 +202,7 @@ def init_db() -> None:
         )
         _ensure_column(conn, "user_profile", "lactation_advice", "TEXT")
         _ensure_column(conn, "user_profile", "feeding_advice", "TEXT")
+        _ensure_column(conn, "user_profile", "daily_summary", "TEXT")
         _ensure_calendar_schema(conn)
         _ensure_column(conn, "feeding_log", "feed_action", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "feeding_log", "feeding_title", "TEXT")
@@ -324,6 +338,24 @@ def update_user_profile_advice(*, user_id: str, lactation_advice: str, feeding_a
             WHERE user_id = ?
             """,
             (str(lactation_advice or ""), str(feeding_advice or ""), _now(), uid),
+        )
+        return cursor.rowcount > 0
+
+
+def update_user_profile_daily_summary(*, user_id: str, daily_summary: str) -> bool:
+    init_db()
+    uid = str(user_id or "").strip()
+    if not uid:
+        return False
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE user_profile
+            SET daily_summary = ?,
+                updated_at = ?
+            WHERE user_id = ?
+            """,
+            (str(daily_summary or ""), _now(), uid),
         )
         return cursor.rowcount > 0
 
@@ -782,12 +814,7 @@ def get_pump_threshold(user_id: str) -> dict[str, Any] | None:
         row = conn.execute("SELECT * FROM pump_threshold WHERE user_id = ?", (user_id,)).fetchone()
         if row:
             return _row_dict(row)
-    return {
-        "stimulate_level_l": 1,
-        "deep_level_l": 1,
-        "stimulate_level_r": 1,
-        "deep_level_r": 1,
-    }
+    return {}
 
 
 def upsert_pump_health(user_id: str, health_l: int, health_r: int) -> None:
@@ -913,6 +940,51 @@ def record_pump_process(user_id: str, payload: dict[str, Any]) -> None:
         conn.execute(
             "INSERT INTO pump_process_point(user_id, payload_json, created_at) VALUES (?, ?, ?)",
             (user_id, json.dumps(payload, ensure_ascii=False), _now()),
+        )
+
+
+def get_pump_workstate_reply_state(user_id: str) -> dict[str, Any]:
+    return _get_pump_reply_state("pump_workstate_reply_state", user_id)
+
+
+def set_pump_workstate_reply_state(user_id: str, state: dict[str, Any] | None) -> None:
+    _set_pump_reply_state("pump_workstate_reply_state", user_id, state)
+
+
+def get_pump_process_reply_state(user_id: str) -> dict[str, Any]:
+    return _get_pump_reply_state("pump_process_reply_state", user_id)
+
+
+def set_pump_process_reply_state(user_id: str, state: dict[str, Any] | None) -> None:
+    _set_pump_reply_state("pump_process_reply_state", user_id, state)
+
+
+def _get_pump_reply_state(table_name: str, user_id: str) -> dict[str, Any]:
+    init_db()
+    uid = str(user_id or "").strip()
+    if not uid:
+        return {}
+    with _connect() as conn:
+        row = conn.execute(f"SELECT state_json FROM {table_name} WHERE user_id = ?", (uid,)).fetchone()
+    return _loads(row["state_json"]) if row else {}
+
+
+def _set_pump_reply_state(table_name: str, user_id: str, state: dict[str, Any] | None) -> None:
+    init_db()
+    uid = str(user_id or "").strip()
+    if not uid:
+        return
+    payload = state if isinstance(state, dict) else {}
+    with _connect() as conn:
+        conn.execute(
+            f"""
+            INSERT INTO {table_name}(user_id, state_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+              state_json = excluded.state_json,
+              updated_at = excluded.updated_at
+            """,
+            (uid, json.dumps(payload, ensure_ascii=False), _now()),
         )
 
 
