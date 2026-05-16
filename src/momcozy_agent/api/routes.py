@@ -500,7 +500,7 @@ async def create_analysis_endpoint(request: Request) -> dict[str, Any]:
         return _analysis_create_response(
             error=0,
             result=bool(normality.get("result") is True),
-            message="**泌乳及喂养分析**  \r" + "  \r".join(message),
+            message="  \r".join(message),
         )
     if analysis_type == "daily_summary":
         summary = create_daily_summary(user_id=uid)
@@ -511,7 +511,7 @@ async def create_analysis_endpoint(request: Request) -> dict[str, Any]:
         daily_summary_text = "\n".join(str(item) for item in message) if isinstance(message, list) else str(message)
         if not data_store.update_user_profile_daily_summary(user_id=uid, daily_summary=daily_summary_text):
             return _analysis_create_response(error=-1, message="failed to update daily summary")
-        return _analysis_create_response(error=0, message= "**每日小结**  \r" + "  \r".join(message))
+        return _analysis_create_response(error=0, message= "  \r".join(message))
     return _analysis_create_response(error=-1, result=False, message="unsupported type")
 
 
