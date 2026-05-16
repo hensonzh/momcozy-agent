@@ -902,6 +902,52 @@ async def get_pump_info(request: Request, user_id: str = "") -> dict[str, Any]:
     return data_store.pump_info(uid)
 
 
+@router.post("/api/client-event")
+async def record_client_event(request: Request) -> dict[str, Any]:
+    verify_api_key(request)
+    body = await _json_body_or_error(request, basic=True)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="client event requires a JSON object")
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    thread_id = str(
+        body.get("thread_id")
+        or body.get("threadId")
+        or body.get("conversation_id")
+        or body.get("conversationId")
+        or ""
+    ).strip()
+    if not thread_id:
+        raise HTTPException(status_code=400, detail="client event requires thread_id")
+
+    url = (os.getenv("MOMCOZY_AGENT_CLIENT_EVENT_URL") or "http://127.0.0.1:8768/api/client-event").strip()
+    if not url or url.lower() in {"none", "disabled", "off"}:
+        return {
+            "status": "local_completed",
+            "conversation_id": thread_id,
+            "consult_id": str(body.get("consult_id") or body.get("consultId") or metadata.get("consult_id") or ""),
+            "event_type": str(body.get("event_type") or body.get("type") or "client_event"),
+        }
+
+    try:
+        import httpx
+    except ImportError as exc:
+        raise HTTPException(status_code=501, detail="httpx is not installed") from exc
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=1.0, read=3.0, write=1.0, pool=1.0), trust_env=False) as client:
+            response = await client.post(url, json=body)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"failed to forward client event: {exc}") from exc
+
+    if response.status_code < 200 or response.status_code >= 300:
+        raise HTTPException(status_code=502, detail=f"client event forward failed: {response.status_code}")
+    try:
+        data = response.json()
+    except ValueError:
+        data = {}
+    return data if isinstance(data, dict) else {"status": "recorded", "conversation_id": thread_id}
+
+
 async def _json_body_or_error(request: Request, *, basic: bool = False, pump: bool = False) -> Any:
     try:
         return await request.json()

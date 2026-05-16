@@ -84,7 +84,7 @@ async def _bridge_sse_to_ws(websocket: WebSocket, payload: dict[str, Any]) -> No
     upstream_url = (os.getenv("MOMCOZY_CHAT_SSE_URL") or "").strip() or DEFAULT_UPSTREAM_SSE_URL
     timeout = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
         try:
             async with client.stream(
                 "POST",

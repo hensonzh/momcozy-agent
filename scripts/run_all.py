@@ -20,10 +20,14 @@ def main() -> None:
     from momcozy_agent.config import load_project_env
     from momcozy_agent.server import main as run_chat_server
 
-    load_project_env(ROOT / ".env")
+    env_path = ROOT / ".env"
+    load_project_env(env_path)
+    entry_api_key = _read_env_value(env_path, "ENTRY_API_KEY")
+    if entry_api_key:
+        os.environ["ENTRY_API_KEY"] = entry_api_key
     CHAT_HOST = os.getenv("CHAT_HOST", "127.0.0.1")
     CHAT_PORT = int(os.getenv("CHAT_PORT", "8768"))
-    os.environ.setdefault("MOMCOZY_CHAT_SSE_URL", f"http://{CHAT_HOST}:{CHAT_PORT}/api/ag-ui")
+    os.environ["MOMCOZY_CHAT_SSE_URL"] = f"http://{CHAT_HOST}:{CHAT_PORT}/api/ag-ui"
 
     host = os.getenv("ENTRY_HOST", "0.0.0.0")
     port = int(os.getenv("ENTRY_PORT", "8769"))
@@ -62,6 +66,23 @@ def _is_port_open(host: str, port: int) -> bool:
 
 def _connect_host(host: str) -> str:
     return "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+
+
+def _read_env_value(path: Path, key: str) -> str:
+    if not path.exists():
+        return ""
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        raw_key, value = line.split("=", 1)
+        if raw_key.strip() != key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            return value[1:-1]
+        return value
+    return ""
 
 
 def _wait_for_port(host: str, port: int, *, timeout_seconds: float) -> None:
