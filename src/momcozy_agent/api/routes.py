@@ -480,7 +480,7 @@ async def create_analysis_endpoint(request: Request) -> dict[str, Any]:
     analysis_type = str(body.get("type") or "").strip()
     if not uid:
         return _analysis_create_response(error=-1, result=False, message="user_id is required")
-    if analysis_type == "mom-baby":
+    if analysis_type == "mom_baby":
         normality = evaluate_status_advice_normality(user_id=uid)
         advice = generate_status_advice(user_id=uid, normality=normality)
         if not advice:
@@ -497,10 +497,11 @@ async def create_analysis_endpoint(request: Request) -> dict[str, Any]:
             f"泌乳建议：{lactation_advice}",
             f"喂养建议：{feeding_advice}",
         ]
+        message_text = "  \r".join(message)
         return _analysis_create_response(
             error=0,
             result=bool(normality.get("result") is True),
-            message=message,
+            message=message_text,
         )
     if analysis_type == "daily_summary":
         summary = create_daily_summary(user_id=uid)
@@ -509,9 +510,10 @@ async def create_analysis_endpoint(request: Request) -> dict[str, Any]:
         data = summary.get("data") if isinstance(summary.get("data"), dict) else {}
         message = data.get("message") if isinstance(data.get("message"), list) else str(summary.get("summary") or "")
         daily_summary_text = "\n".join(str(item) for item in message) if isinstance(message, list) else str(message)
+        response_message = "  \r".join(str(item) for item in message) if isinstance(message, list) else str(message)
         if not data_store.update_user_profile_daily_summary(user_id=uid, daily_summary=daily_summary_text):
             return _analysis_create_response(error=-1, message="failed to update daily summary")
-        return _analysis_create_response(error=0, message=message)
+        return _analysis_create_response(error=0, message=response_message)
     return _analysis_create_response(error=-1, result=False, message="unsupported type")
 
 
@@ -1483,10 +1485,10 @@ def _valid_analysis_payload(payload: Any) -> bool:
 
 
 def _analysis_create_response(*, error: int, message: Any, result: bool | None = None) -> dict[str, Any]:
-    response: dict[str, Any] = {"error": int(error)}
+    response: dict[str, Any] = {"error": int(error), "data": {}}
     if result is not None:
-        response["result"] = bool(result)
-    response["message"] = message
+        response["data"]["result"] = bool(result)
+    response["data"]["message"] = message
     return response
 
 

@@ -1272,17 +1272,6 @@ def revise_plan_task(
             """,
             (f"{date_text} {time_text}:00", content, finish, _now(), uid, date_text, int(task_id)),
         )
-        if int(cursor.rowcount or 0) > 0 and finish == "true" and not previous_done:
-            updated = conn.execute(
-                """
-                SELECT item_id, user_id, date, task_id, start_time, end_time,
-                       content, type, source, is_milk_pump, finish
-                FROM calendar
-                WHERE user_id = ? AND date = ? AND task_id = ?
-                """,
-                (uid, date_text, int(task_id)),
-            ).fetchone()
-            _sync_completed_calendar_item_logs(conn, updated)
         conn.commit()
         return int(cursor.rowcount or 0) > 0
 

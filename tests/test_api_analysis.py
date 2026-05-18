@@ -28,7 +28,7 @@ class AnalysisCreateApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"error": -1, "result": False, "message": "invalid request body"})
+        self.assertEqual(response.json(), {"error": -1, "data": {"result": False, "message": "invalid request body"}})
 
     def test_mom_baby_returns_two_advice_messages_and_updates_profile_advice(self) -> None:
         _seed_user("u1")
@@ -41,7 +41,7 @@ class AnalysisCreateApiTests(unittest.TestCase):
         ):
             response = self.client.post(
                 "/v1/analysis/create",
-                json={"user_id": "u1", "type": "mom-baby"},
+                json={"user_id": "u1", "type": "mom_baby"},
                 headers=self.headers,
             )
 
@@ -50,8 +50,10 @@ class AnalysisCreateApiTests(unittest.TestCase):
             response.json(),
             {
                 "error": 0,
-                "result": True,
-                "message": ["泌乳建议：今天泌乳节奏稳定。", "喂养建议：喂养记录整体正常。"],
+                "data": {
+                    "result": True,
+                    "message": "泌乳建议：今天泌乳节奏稳定。  \r喂养建议：喂养记录整体正常。",
+                },
             },
         )
         normality.assert_called_once_with(user_id="u1")
@@ -97,7 +99,7 @@ class AnalysisCreateApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"error": -1, "result": False, "message": "unsupported type"})
+        self.assertEqual(response.json(), {"error": -1, "data": {"result": False, "message": "unsupported type"}})
 
     def test_daily_summary_returns_summary_message_and_updates_profile_summary(self) -> None:
         _seed_user("u1")
@@ -118,7 +120,7 @@ class AnalysisCreateApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"error": 0, "message": message})
+        self.assertEqual(response.json(), {"error": 0, "data": {"message": "  \r".join(message)}})
         self.assertEqual(_profile("u1")["daily_summary"], "\n".join(message))
 
 
