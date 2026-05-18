@@ -194,9 +194,9 @@ def apply_calendar_adjustment(
     proposal: Any,
     idempotency_key: str | None = None,
 ) -> ServiceResult:
-    _ = idempotency_key
     uid = str(user_id or "").strip()
     date = _date_text(target_date)
+    key = norm_text(idempotency_key)
     proposal_data = _parse_json_object(proposal)
     item = proposal_data.get("insert_event") if isinstance(proposal_data.get("insert_event"), dict) else {}
     if not item:
@@ -207,11 +207,28 @@ def apply_calendar_adjustment(
     item_type = _resolve_calendar_type(item.get("type"), content)
     if not uid or not date or not start_at or not content:
         return error_result("missing_required_field", "Confirmed calendar adjustment is missing required event fields.")
+    if not key:
+        return error_result("missing_idempotency_key", "缺少 idempotency_key。")
     if item_type not in VALID_CALENDAR_TYPES:
         return error_result("invalid_calendar_type", f"Unsupported calendar type: {item_type}")
     updates = proposal_data.get("updates") if isinstance(proposal_data.get("updates"), list) else []
 
+    replay_item_id = _idempotent_calendar_adjustment_item_id(user_id=uid, idempotency_key=key)
+    if replay_item_id > 0:
+        inserted = _calendar_item_by_id(replay_item_id)
+        return ok_result(
+            "calendar_adjustment_idempotent_replay",
+            data={
+                "user_id": uid,
+                "target_date": date,
+                "inserted_event": _normalize_calendar_row(inserted or {}),
+                "item": _normalize_calendar_row(inserted or {}),
+                "applied_updates": [],
+            },
+        )
+
     with transaction() as conn:
+        _ensure_idempotency_table(conn)
         row = conn.execute(
             "SELECT COALESCE(MAX(task_id), 0) AS max_task_id FROM calendar WHERE user_id = ? AND date = ?",
             (uid, date),
@@ -228,6 +245,13 @@ def apply_calendar_adjustment(
             (uid, date, task_id, start_at, end_at, content, item_type, 1 if item_type == CALENDAR_TYPE_PUMP else 0),
         )
         inserted_id = int(cursor.lastrowid or 0)
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO tool_idempotency_log(user_id, tool_name, idempotency_key, resource_id, created_at)
+            VALUES (?, 'milk_calendar_mutate.apply_adjustment', ?, ?, ?)
+            """,
+            (uid, key, inserted_id, _now()),
+        )
         applied_updates: list[dict[str, Any]] = []
         for update in updates:
             if not isinstance(update, dict):
@@ -767,3 +791,49 @@ def _parse_json_object(value: Any) -> dict[str, Any]:
             return {}
         return dict(parsed) if isinstance(parsed, dict) else {}
     return {}
+
+
+def _idempotent_calendar_adjustment_item_id(*, user_id: str, idempotency_key: str) -> int:
+    row = fetch_one(
+        """
+        SELECT resource_id
+        FROM tool_idempotency_log
+        WHERE user_id = ?
+          AND tool_name = 'milk_calendar_mutate.apply_adjustment'
+          AND idempotency_key = ?
+        LIMIT 1
+        """,
+        (user_id, idempotency_key),
+    )
+    return to_int(row.get("resource_id"), 0) if row else 0
+
+
+def _calendar_item_by_id(item_id: int) -> dict[str, Any] | None:
+    return fetch_one(
+        """
+        SELECT item_id, user_id, plan_id, date, task_id, start_time, end_time,
+               content, type, source, is_milk_pump, finish, created_at, modified_at
+        FROM calendar
+        WHERE item_id = ?
+        """,
+        (int(item_id),),
+    )
+
+
+def _ensure_idempotency_table(conn: Any) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tool_idempotency_log (
+            user_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            resource_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(user_id, tool_name, idempotency_key)
+        )
+        """
+    )
+
+
+def _now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")

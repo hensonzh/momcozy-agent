@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 from ..services.milk_management.assessment import evaluate_milk_status
@@ -40,9 +39,6 @@ from ..services.milk_management.today import (
     get_today_summary,
 )
 from ..types import RuntimeInputs
-
-CALENDAR_UI_REQUIRED_MESSAGE = "好的，这个需要您回到主界面的日历中操作完成，并记录具体时间和奶量哦。这样可以帮助我们更准确地评估您的泌乳状态。"
-
 
 def execute_milk_management_tool(args: dict[str, Any], inputs: RuntimeInputs) -> dict[str, Any]:
     name = str(args.get("_tool_name") or "")
@@ -229,7 +225,14 @@ def _mutate_plan(arguments: dict[str, Any]) -> dict[str, Any]:
                 "summary": validation.get("summary", "计划校验未通过。"),
                 "data": {"validation": validation_data},
             }
-        result = dict(apply_milk_plan(user_id=arguments["user_id"], confirmed_plan=plan, idempotency_key=arguments["idempotency_key"]))
+        result = dict(
+            apply_milk_plan(
+                user_id=arguments["user_id"],
+                confirmed_plan=plan,
+                idempotency_key=arguments["idempotency_key"],
+                calendar_write_strategy=arguments.get("calendar_write_strategy"),
+            )
+        )
         result.setdefault("data", {})
         if isinstance(result["data"], dict):
             result["data"]["validation"] = validation_data
@@ -320,8 +323,6 @@ def _mutate_calendar(arguments: dict[str, Any]) -> dict[str, Any]:
             )
         )
     if operation == "update_item":
-        if _calendar_item_update_has_finish(arguments) and not _llm_calendar_finish_updates_enabled():
-            return _calendar_ui_required_result()
         return dict(update_calendar_item(**_calendar_item_update_arguments(arguments)))
     if operation == "delete_item":
         return dict(delete_calendar_item(user_id=arguments["user_id"], item_id=arguments.get("item_id")))
@@ -381,34 +382,6 @@ def _calendar_item_update_arguments(arguments: dict[str, Any]) -> dict[str, Any]
         if key in arguments and key not in normalized:
             normalized[key] = arguments[key]
     return normalized
-
-
-def _calendar_item_update_has_finish(arguments: dict[str, Any]) -> bool:
-    if "finish" in arguments:
-        return True
-    patch = arguments.get("patch")
-    if not patch:
-        return False
-    patch_data = _parse_json_object(patch)
-    return "finish" in patch_data
-
-
-def _llm_calendar_finish_updates_enabled() -> bool:
-    return str(os.getenv("MOMCOZY_LLM_CALENDAR_FINISH_UPDATE_ENABLED", "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
-def _calendar_ui_required_result() -> dict[str, Any]:
-    return {
-        "ok": False,
-        "status": "calendar_ui_required",
-        "summary": CALENDAR_UI_REQUIRED_MESSAGE,
-        "data": {"message": CALENDAR_UI_REQUIRED_MESSAGE},
-    }
 
 
 def _parse_json_object(value: Any) -> dict[str, Any]:

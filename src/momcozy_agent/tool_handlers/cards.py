@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from ..types import RuntimeInputs
@@ -12,6 +13,7 @@ PUMP_PRODUCT_URL = (
 PUMP_PRODUCT_LINK = f"[sea.momcozy.com]({PUMP_PRODUCT_URL})"
 PUMP_ITEM = {
     "label": "便携式吸奶器",
+    "quantity": "1台",
     "priority": "recommended",
     "note": "如果计划母乳或混合喂养，可作为初期涨奶或追奶的备用选择；具体使用以医院和哺乳顾问建议为准。",
 }
@@ -27,9 +29,22 @@ BIRTH_PLAN_DISCLAIMER = (
 )
 BIRTH_PLAN_ASSISTANT_FOLLOWUP = {
     "kind": "birth_plan_card_guidance",
-    "message": "你可以在产检或入院前把这张卡给医生/护士看；其中问题部分建议提前和医院确认。",
+    "message": "你可以在产检或入院前把这张卡给医生/护士看，用它快速沟通你的重点偏好和需要讨论的问题。",
 }
 PLACEHOLDER_VALUES = {"", "to confirm", "待确认", "未确定", "不确定", "none", "n/a"}
+BIRTH_PATH_ALIASES = {
+    "vaginal": "顺产",
+    "natural": "顺产",
+    "顺产": "顺产",
+    "planned_c_section": "刨腹产",
+    "c_section": "刨腹产",
+    "c-section": "刨腹产",
+    "cesarean": "刨腹产",
+    "剖宫产": "刨腹产",
+    "计划剖宫产": "刨腹产",
+    "剖腹产": "刨腹产",
+    "刨腹产": "刨腹产",
+}
 
 
 def create_form(args: dict[str, Any], inputs: RuntimeInputs) -> dict[str, Any]:
@@ -80,13 +95,11 @@ def _prepare_hospital_bag_card(card_json: dict[str, Any], inputs: RuntimeInputs)
         groups = []
         card_json["packing_groups"] = groups
 
-    group = _find_postpartum_group(groups)
+    group = _find_lactation_or_postpartum_group(groups)
     if group is None:
-        group = {"group_id": "postpartum", "title": "妈妈入院基础包", "items": []}
+        group = {"group_id": "lactation", "title": "哺乳用品", "items": []}
         insert_at = 1 if groups else 0
         groups.insert(insert_at, group)
-    else:
-        _move_group_into_visible_range(groups, group)
 
     items = group.get("items")
     if not isinstance(items, list):
@@ -109,8 +122,8 @@ def _prepare_birth_plan_card(card_json: dict[str, Any], inputs: RuntimeInputs) -
     compact = {
         "card_type": "birth_plan_card",
         "schema_version": "1.0",
-        "title": _first_text(source.get("title")) or "分娩沟通卡",
-        "subtitle": _first_text(source.get("subtitle")) or "产房沟通优先级卡片",
+        "title": _localized_birth_plan_title(_first_text(source.get("title"))) or "分娩沟通卡",
+        "subtitle": _localized_birth_plan_subtitle(_first_text(source.get("subtitle"))) or "产房沟通优先级卡片",
         "overview": {
             "due_date_or_week": _first_text(
                 overview.get("due_date_or_week"),
@@ -118,12 +131,19 @@ def _prepare_birth_plan_card(card_json: dict[str, Any], inputs: RuntimeInputs) -
                 form_data.get("due_date_or_week"),
             )
             or "待确认",
-            "birth_path": _first_text(
-                overview.get("birth_path"),
-                birth_preferences.get("birth_path"),
-                form_data.get("birth_path"),
+            "birth_path": _normalize_birth_path(
+                _first_text(
+                    overview.get("birth_path"),
+                    birth_preferences.get("birth_path"),
+                    form_data.get("birth_path"),
+                )
             )
             or "待确认",
+            "birth_setting": _first_text(
+                overview.get("birth_setting"),
+                owner.get("birth_setting"),
+                form_data.get("birth_setting"),
+            ),
             "support_people": _first_text(
                 overview.get("support_people"),
                 owner.get("support_people"),
@@ -131,6 +151,7 @@ def _prepare_birth_plan_card(card_json: dict[str, Any], inputs: RuntimeInputs) -
             )
             or "待确认",
         },
+        "personalized_notes": _birth_plan_personalized_notes(form_data),
         "top_priorities": _normalize_birth_plan_items(
             source.get("top_priorities"),
             _nested_text(source, "if_plans_change", "what_matters_most"),
@@ -160,7 +181,11 @@ def _prepare_birth_plan_card(card_json: dict[str, Any], inputs: RuntimeInputs) -
             form_data.get("if_plans_change"),
             max_items=3,
         ),
-        "questions_for_hospital": _normalize_birth_plan_items(source.get("questions_for_hospital"), max_items=3),
+        "questions_for_hospital": _normalize_birth_plan_items(
+            source.get("questions_for_hospital"),
+            _birth_plan_default_questions(form_data),
+            max_items=3,
+        ),
         "medical_notes": _normalize_medical_notes(form_data.get("medical_notes")),
         "disclaimer": _localized_disclaimer(_first_text(source.get("disclaimer"))) or BIRTH_PLAN_DISCLAIMER,
     }
@@ -170,32 +195,17 @@ def _prepare_birth_plan_card(card_json: dict[str, Any], inputs: RuntimeInputs) -
     return dict(BIRTH_PLAN_ASSISTANT_FOLLOWUP)
 
 
-def _find_postpartum_group(groups: list[Any]) -> dict[str, Any] | None:
+def _find_lactation_or_postpartum_group(groups: list[Any]) -> dict[str, Any] | None:
     for group in groups:
         if not isinstance(group, dict):
             continue
         group_id = str(group.get("group_id", "")).lower()
         title = str(group.get("title", "")).lower()
-        if any(token in group_id for token in ("postpartum", "mom", "mother")):
+        if any(token in group_id for token in ("lactation", "breastfeeding", "feeding", "postpartum", "mom", "mother")):
             return group
-        if any(token in title for token in ("postpartum", "mom", "mother", "妈妈", "产后")):
+        if any(token in title for token in ("lactation", "breastfeeding", "feeding", "postpartum", "mom", "mother", "哺乳", "喂养", "妈妈", "产后")):
             return group
     return None
-
-
-def _move_group_into_visible_range(groups: list[Any], group: dict[str, Any]) -> None:
-    try:
-        index = groups.index(group)
-    except ValueError:
-        return
-    if index < 3:
-        return
-    groups.pop(index)
-    groups.insert(1 if groups else 0, group)
-
-
-def _has_breast_pump_item(items: list[Any]) -> bool:
-    return _breast_pump_item_index(items) is not None
 
 
 def _ensure_breast_pump_visible(items: list[Any]) -> None:
@@ -203,11 +213,6 @@ def _ensure_breast_pump_visible(items: list[Any]) -> None:
     target_index = min(2, len(items))
     if pump_index is None:
         items.insert(target_index, dict(PUMP_ITEM))
-        return
-    if pump_index < 4:
-        return
-    pump_item = items.pop(pump_index)
-    items.insert(min(target_index, len(items)), pump_item)
 
 
 def _breast_pump_item_index(items: list[Any]) -> int | None:
@@ -279,6 +284,27 @@ def _localized_disclaimer(value: str) -> str:
     return value
 
 
+def _localized_birth_plan_title(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in {"birth plan card", "labor room communication priority card"}:
+        return "分娩沟通卡"
+    return value
+
+
+def _localized_birth_plan_subtitle(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in {"birth plan card", "labor room communication priority card"}:
+        return "产房沟通优先级卡片"
+    return value
+
+
+def _normalize_birth_path(value: str) -> str:
+    text = value.strip()
+    if not _has_meaningful_value(text):
+        return ""
+    return BIRTH_PATH_ALIASES.get(text.lower()) or BIRTH_PATH_ALIASES.get(text) or text
+
+
 def _nested_text(source: dict[str, Any], *keys: str) -> str:
     current: Any = source
     for key in keys:
@@ -298,7 +324,7 @@ def _normalize_birth_plan_items(*values: Any, max_items: int) -> list[str]:
     items: list[str] = []
     for value in values:
         for item in _flatten_text_items(value):
-            softened = _soften_birth_plan_request(item)
+            softened = _soften_birth_plan_request(_normalize_birth_plan_text(item))
             if softened and softened not in items:
                 items.append(softened)
             if len(items) >= max_items:
@@ -309,6 +335,43 @@ def _normalize_birth_plan_items(*values: Any, max_items: int) -> list[str]:
 def _normalize_medical_notes(value: Any) -> list[str]:
     # Medical notes must remain user-supplied facts only; do not derive them from model-generated card fields.
     return _flatten_text_items(value)[:3]
+
+
+def _birth_plan_personalized_notes(form_data: dict[str, Any]) -> list[str]:
+    notes: list[str] = []
+    due = _first_text(form_data.get("due_date_or_week"))
+    birth_path = _normalize_birth_path(_first_text(form_data.get("birth_path")))
+    birth_setting = _first_text(form_data.get("birth_setting"))
+    support_people = _first_text(form_data.get("support_people"))
+    if due or birth_path:
+        parts = [part for part in (due, birth_path) if part]
+        notes.append(f"基于{'、'.join(parts)}，整理成适合产检或入院沟通的重点卡片。")
+    if support_people:
+        notes.append(f"已把{support_people}作为重要沟通参与人。")
+    if birth_setting:
+        notes.append(f"可在{birth_setting}产检或入院前给医护团队查看。")
+    return notes[:3]
+
+
+def _birth_plan_default_questions(form_data: dict[str, Any]) -> list[str]:
+    questions = [
+        "分娩沟通卡：确认是否可以在产检或入院时交给医生/护士参考。",
+        "陪产/支持人：确认谁可以参与沟通、陪产或术前/产房决策。",
+    ]
+    if _normalize_birth_path(_first_text(form_data.get("birth_path"))) == "刨腹产":
+        questions.append("术后接触宝宝/喂养：确认安全允许时的肌肤接触、喂养和宝宝护理流程。")
+    else:
+        questions.append("疼痛管理：确认无痛/麻醉沟通时机和可选方案。")
+    return questions
+
+
+def _normalize_birth_plan_text(text: str) -> str:
+    normalized = re.sub(r"^\s*\d+[.)、．]\s*", "", text.strip())
+    normalized = re.sub(r"\s+", " ", normalized)
+    lowered = normalized.lower()
+    if lowered in {"skin-to-skin", "skin to skin"}:
+        return "出生后尽早肌肤接触"
+    return normalized.replace("skin-to-skin", "出生后尽早肌肤接触").replace("skin to skin", "出生后尽早肌肤接触")
 
 
 def _flatten_text_items(value: Any) -> list[str]:

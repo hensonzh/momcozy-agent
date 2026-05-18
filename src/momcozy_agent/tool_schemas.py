@@ -281,7 +281,7 @@ FUNCTION_TOOLS: dict[ToolName, FunctionToolDefinition] = {
     ),
     "milk_plan_mutate": _function_tool(
         "milk_plan_mutate",
-        "CREATE/UPDATE/DELETE 写入工具：保存、更新或删除用户已确认的奶量计划。保存计划会展开写入 calendar。有副作用；只有用户明确确认后才调用。",
+        "CREATE/UPDATE/DELETE 写入工具：保存、更新或删除用户已确认的奶量计划。保存计划会展开写入 calendar；如未来已有计划任务，必须先让用户确认追加还是替换，再传 calendar_write_strategy。有副作用；只有用户明确确认后才调用。",
         {
             "operation": {"type": "string", "enum": ["create", "update", "delete"]},
             "plan_id": _nullable({"type": "integer"}),
@@ -289,6 +289,13 @@ FUNCTION_TOOLS: dict[ToolName, FunctionToolDefinition] = {
             "patch": JSON_OBJECT_STRING,
             "reexpand_calendar": {"type": "boolean"},
             "delete_calendar_items": {"type": "boolean"},
+            "calendar_write_strategy": _nullable(
+                {
+                    "type": "string",
+                    "enum": ["append", "replace_future_plan_tasks"],
+                    "description": "create 保存计划时的日程写入方式。append=追加到现有日程；replace_future_plan_tasks=替换未来未完成的旧计划任务。无已有未来计划任务可传 null。",
+                }
+            ),
             "idempotency_key": {"type": "string"},
         },
     ),
@@ -321,7 +328,7 @@ FUNCTION_TOOLS: dict[ToolName, FunctionToolDefinition] = {
     ),
     "milk_calendar_mutate": _function_tool(
         "milk_calendar_mutate",
-        "APPLY/UPDATE/DELETE 写入工具：应用日程变更 proposal，或批量/单条修改、删除 calendar 条目。有副作用；只有用户明确确认后才调用。完成状态 finish 默认不允许由 LLM 写入。",
+        "APPLY/UPDATE/DELETE 写入工具：应用日程变更 proposal，或批量/单条修改、删除 calendar 条目。有副作用；只有用户明确确认后才调用。任务完成/跳过优先使用 milk_task_complete。",
         {
             "operation": {"type": "string", "enum": ["apply_adjustment", "range_shift", "range_delete", "patch_items", "update_item", "delete_item"]},
             "target_date": _nullable(ISO_DATE),

@@ -8,6 +8,7 @@ from .assessment import evaluate_milk_status
 from .db import fetch_all, fetch_one, transaction
 from .growth import evaluate_infant_growth
 from .schemas import (
+    CALENDAR_TYPE_NURSING,
     CALENDAR_SOURCE_SYSTEM,
     CALENDAR_TYPE_PUMP,
     PLAN_TYPE_DECREASE,
@@ -33,6 +34,12 @@ INCREASE_DEFAULT_PLAN_DAYS = 30
 DECREASE_MIN_DAILY_DELTA_ML = 50.0
 DECREASE_DEFAULT_DAILY_DELTA_ML = 80.0
 DECREASE_MAX_PLAN_DAYS = 28
+CALENDAR_WRITE_STRATEGY_APPEND = "append"
+CALENDAR_WRITE_STRATEGY_REPLACE_FUTURE_PLAN_TASKS = "replace_future_plan_tasks"
+SUPPORTED_CALENDAR_WRITE_STRATEGIES = {
+    CALENDAR_WRITE_STRATEGY_APPEND,
+    CALENDAR_WRITE_STRATEGY_REPLACE_FUTURE_PLAN_TASKS,
+}
 
 
 def preview_milk_plan(
@@ -206,6 +213,7 @@ def preview_milk_plan(
         "medical_disclaimer": "本计划仅供家庭喂养管理参考，不能替代医生、儿科医生或 IBCLC 的专业建议。",
         "source": "service_preview_v1",
     }
+    calendar_delta = _calendar_write_delta(user_id=uid, plan=draft)
     preview_validation = _preview_validation_data(user_id=uid, draft=draft)
     if preview_validation.get("valid") is not True:
         violations = preview_validation.get("violations") if isinstance(preview_validation.get("violations"), list) else []
@@ -216,6 +224,7 @@ def preview_milk_plan(
                 "requires_confirmation": False,
                 "draft": draft,
                 "validation": preview_validation,
+                "calendar_delta": calendar_delta,
                 "assessment": assessment_data,
                 "growth_assessment": growth_data,
                 "eligibility": eligibility,
@@ -229,6 +238,7 @@ def preview_milk_plan(
             "requires_confirmation": True,
             "draft": draft,
             "validation": preview_validation,
+            "calendar_delta": calendar_delta,
             "assessment": assessment_data,
             "growth_assessment": growth_data,
             "eligibility": eligibility,
@@ -242,6 +252,7 @@ def apply_milk_plan(
     user_id: str,
     confirmed_plan: dict[str, Any] | str,
     idempotency_key: str,
+    calendar_write_strategy: str | None = None,
 ) -> ServiceResult:
     """Persist a confirmed plan to `milk_plan` and expand it into `calendar`."""
 
@@ -261,6 +272,28 @@ def apply_milk_plan(
     plan_days = max(to_int(plan.get("plan_days"), 1), 1)
     plan_name = norm_text(plan.get("plan_name")) or f"{_plan_title(plan_type)}{plan_days}天"
     summary = norm_text(plan.get("summary")) or "已保存奶量计划。"
+    strategy_input = norm_text(calendar_write_strategy)
+    strategy = _normalize_calendar_write_strategy(strategy_input)
+    if strategy_input and not strategy:
+        return error_result(
+            "invalid_calendar_write_strategy",
+            "日程写入方式无效，请选择追加或替换未来未完成计划任务。",
+            data={"allowed_strategies": sorted(SUPPORTED_CALENDAR_WRITE_STRATEGIES)},
+        )
+    if not strategy:
+        strategy = CALENDAR_WRITE_STRATEGY_APPEND
+
+    calendar_delta = _calendar_write_delta(
+        user_id=uid,
+        plan=plan,
+        calendar_write_strategy=strategy if strategy_input else None,
+    )
+    if calendar_delta.get("requires_calendar_write_strategy") and not strategy_input:
+        return error_result(
+            "calendar_write_strategy_required",
+            "当前未来日程已有奶量计划任务，请先确认是追加到现有日程，还是替换未来未完成计划任务。",
+            data={"calendar_delta": calendar_delta, "allowed_strategies": sorted(SUPPORTED_CALENDAR_WRITE_STRATEGIES)},
+        )
     payload = {
         "ok": True,
         "plan_generated": True,
@@ -268,8 +301,10 @@ def apply_milk_plan(
         "summary": summary,
         "plan": plan,
         "idempotency_key": norm_text(idempotency_key),
+        "calendar_write_strategy": strategy,
     }
 
+    replaced_calendar_count = 0
     with transaction() as conn:
         existing = conn.execute(
             """
@@ -286,6 +321,8 @@ def apply_milk_plan(
             plan_id = int(existing["plan_id"])
             inserted_count = 0
         else:
+            if strategy == CALENDAR_WRITE_STRATEGY_REPLACE_FUTURE_PLAN_TASKS:
+                replaced_calendar_count = _delete_future_plan_calendar_rows(conn, user_id=uid, plan_days=plan_days)
             cursor = conn.execute(
                 """
                 INSERT INTO milk_plan (
@@ -330,6 +367,9 @@ def apply_milk_plan(
             "plan_type": plan_type,
             "plan_days": plan_days,
             "inserted_calendar_count": inserted_count,
+            "replaced_calendar_count": replaced_calendar_count,
+            "calendar_write_strategy": strategy,
+            "calendar_delta": calendar_delta,
             "calendar_items": calendar_rows,
         },
     )
@@ -881,13 +921,131 @@ def _insert_calendar_rows(conn: Any, *, user_id: str, plan_id: int, plan: dict[s
                     task_id,
                     start_time,
                     end_time,
-                    norm_text(item.get("action") or item.get("action_text") or item.get("content")) or "双侧吸奶15分钟",
+                    norm_text(item.get("calendar_title") or item.get("title") or item.get("content") or item.get("action") or item.get("action_text"))
+                    or "吸奶",
                     CALENDAR_TYPE_PUMP,
                     CALENDAR_SOURCE_SYSTEM,
                 ),
             )
             inserted += 1
     return inserted
+
+
+def _normalize_calendar_write_strategy(value: Any) -> str:
+    token = norm_text(value)
+    if token in SUPPORTED_CALENDAR_WRITE_STRATEGIES:
+        return token
+    return ""
+
+
+def _calendar_write_delta(
+    *,
+    user_id: str,
+    plan: dict[str, Any],
+    calendar_write_strategy: str | None = None,
+) -> dict[str, Any]:
+    plan_days = max(to_int(plan.get("plan_days"), 1), 1)
+    start_date = datetime.now().date()
+    end_date = start_date + timedelta(days=plan_days)
+    existing = _existing_future_plan_calendar_summary(user_id=user_id, start_date=start_date, end_date=end_date)
+    draft_count = _plan_calendar_row_count(plan)
+    strategy = _normalize_calendar_write_strategy(calendar_write_strategy)
+    append_final = int(existing.get("total_count", 0)) + draft_count
+    replace_final = draft_count
+    selected_final = replace_final if strategy == CALENDAR_WRITE_STRATEGY_REPLACE_FUTURE_PLAN_TASKS else append_final
+    selected_replaced = int(existing.get("total_count", 0)) if strategy == CALENDAR_WRITE_STRATEGY_REPLACE_FUTURE_PLAN_TASKS else 0
+    return {
+        "date_range": {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "end_exclusive": True,
+        },
+        "existing_future_plan_task_count": int(existing.get("total_count", 0)),
+        "existing_future_plan_task_daily": existing.get("daily", []),
+        "draft_task_count": draft_count,
+        "has_existing_future_plan_tasks": int(existing.get("total_count", 0)) > 0,
+        "requires_calendar_write_strategy": int(existing.get("total_count", 0)) > 0 and not strategy,
+        "selected_strategy": strategy or None,
+        "selected_final_task_count": selected_final,
+        "selected_added_task_count": draft_count,
+        "selected_replaced_task_count": selected_replaced,
+        "strategy_options": {
+            CALENDAR_WRITE_STRATEGY_APPEND: {
+                "label": "追加到现有日程",
+                "final_task_count": append_final,
+                "added_task_count": draft_count,
+                "replaced_task_count": 0,
+            },
+            CALENDAR_WRITE_STRATEGY_REPLACE_FUTURE_PLAN_TASKS: {
+                "label": "替换未来未完成计划任务",
+                "final_task_count": replace_final,
+                "added_task_count": draft_count,
+                "replaced_task_count": int(existing.get("total_count", 0)),
+            },
+        },
+    }
+
+
+def _existing_future_plan_calendar_summary(*, user_id: str, start_date: date, end_date: date) -> dict[str, Any]:
+    rows = fetch_all(
+        """
+        SELECT date, COUNT(*) AS count
+        FROM calendar
+        WHERE user_id = ?
+          AND date >= ?
+          AND date < ?
+          AND plan_id IS NOT NULL
+          AND source = ?
+          AND type IN (?, ?)
+          AND finish != 'true'
+        GROUP BY date
+        ORDER BY date ASC
+        """,
+        (
+            user_id,
+            start_date.isoformat(),
+            end_date.isoformat(),
+            CALENDAR_SOURCE_SYSTEM,
+            CALENDAR_TYPE_PUMP,
+            CALENDAR_TYPE_NURSING,
+        ),
+    )
+    daily = [{"date": norm_text(row.get("date")), "count": to_int(row.get("count"), 0)} for row in rows]
+    return {"total_count": sum(item["count"] for item in daily), "daily": daily}
+
+
+def _delete_future_plan_calendar_rows(conn: Any, *, user_id: str, plan_days: int) -> int:
+    start_date = datetime.now().date()
+    end_date = start_date + timedelta(days=max(plan_days, 1))
+    cursor = conn.execute(
+        """
+        DELETE FROM calendar
+        WHERE user_id = ?
+          AND date >= ?
+          AND date < ?
+          AND plan_id IS NOT NULL
+          AND source = ?
+          AND type IN (?, ?)
+          AND finish != 'true'
+        """,
+        (
+            user_id,
+            start_date.isoformat(),
+            end_date.isoformat(),
+            CALENDAR_SOURCE_SYSTEM,
+            CALENDAR_TYPE_PUMP,
+            CALENDAR_TYPE_NURSING,
+        ),
+    )
+    return int(cursor.rowcount or 0)
+
+
+def _plan_calendar_row_count(plan: dict[str, Any]) -> int:
+    plan_days = max(to_int(plan.get("plan_days"), 1), 1)
+    count = 0
+    for day_index in range(plan_days):
+        count += len(_schedule_items_for_day(plan, day_index + 1))
+    return count
 
 
 def _build_plan_schedule_items(
@@ -941,12 +1099,16 @@ def _build_plan_schedule_items(
     if plan_type == PLAN_TYPE_MAINTAIN:
         action = "维持当前节奏吸奶"
         duration_minutes = 30
-    items = [{"time": time, "action": action, "duration_minutes": duration_minutes, "kind": "regular"} for time in picked]
+    items = [
+        {"time": time, "calendar_title": "吸奶", "action": action, "duration_minutes": duration_minutes, "kind": "regular"}
+        for time in picked
+    ]
     if plan_type == PLAN_TYPE_INCREASE and require_pp and items:
         items[0] = {
             **items[0],
             "kind": "pp",
-            "action": "第1-7天执行PP追奶：双侧吸20分钟，休息10分钟，再吸10分钟，休息10分钟，再吸10分钟；第8天后改为常规吸奶15分钟",
+            "calendar_title": "吸奶",
+            "action": "第1-7天执行吸奶：双侧吸20分钟，休息10分钟，再吸10分钟，休息10分钟，再吸10分钟；第8天后改为常规吸奶15分钟",
             "duration_minutes": INCREASE_PP_MINUTES,
         }
     return items
@@ -1305,7 +1467,7 @@ def _validate_increase_templates(
         items = template.get("items") if isinstance(template.get("items"), list) else []
         pp_items = [item for item in items if _is_pp_item(item)]
         if day_start >= 8 and pp_items:
-            violations.append("追奶计划第 8 天后不能继续安排 PP 追奶。")
+            violations.append("追奶计划第 8 天后不能继续安排加强吸奶节奏。")
         if len(items) > 12:
             warnings.append("追奶计划每日任务超过 12 项，执行压力可能过高。")
 
@@ -1894,6 +2056,7 @@ def _regularize_pp_item(item: dict[str, Any]) -> dict[str, Any]:
     return {
         **item,
         "kind": "regular",
+        "calendar_title": "吸奶",
         "action": "双侧同时常规吸奶15分钟，并记录本次奶量",
         "duration_minutes": INCREASE_REGULAR_PUMP_MINUTES,
     }
@@ -1943,7 +2106,7 @@ def _plan_rule_notes(plan_type: str, rules: dict[str, Any]) -> list[str]:
     if plan_type == PLAN_TYPE_INCREASE:
         notes = ["优先保证可执行性，新增频次不要造成明显疲惫。", "每次吸奶后记录奶量，连续 3 天后复盘。"]
         if rules.get("require_pp"):
-            notes.insert(0, "如身体允许，可在第1-7天安排一次 PP 追奶；第8天后改回常规吸奶。")
+            notes.insert(0, "如身体允许，可在第1-7天安排一次吸奶；第8天后改回常规吸奶。")
         if rules.get("needs_referral"):
             notes.append("当前频次已较高，如仍明显担忧奶量，建议考虑 IBCLC 支持。")
         return notes
@@ -1975,7 +2138,7 @@ def _review_note(plan_type: str) -> str:
 
 def _repeat_note(plan_type: str, days: int, rules: dict[str, Any]) -> str:
     if plan_type == PLAN_TYPE_INCREASE and rules.get("require_pp") and days > 7:
-        return "第1-7天保留PP追奶安排，第8天起该时段改为常规吸奶。"
+        return "第1-7天保留吸奶安排，第8天起该时段改为常规吸奶。"
     if plan_type == PLAN_TYPE_DECREASE:
         return f"每 {to_int(rules.get('strategy_interval_days'), 7)} 天作为一个阶段，确认舒适后再进入下一阶段；不排空，必要时冷敷。"
     return "按同一时间表执行，按复盘结果微调。"

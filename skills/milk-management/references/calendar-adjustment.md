@@ -9,7 +9,7 @@
 - 新增事项首轮只能 preview，不能直接 apply。
 - 用户新增的事情必须写入 calendar；不能只调整吸奶/亲喂任务。
 - preview / apply 的 payload 必须包含用户插入事件本身，以及由此产生的排奶调整。
-- 涉及完成状态 `finish` 的更新暂时强制走主界面日历；直接温柔回复“好的，这个需要您回到主界面的日历中操作完成，并记录具体时间和奶量哦。这样可以帮助我们更准确地评估您的泌乳状态。”，不要调用工具。
+- 涉及完成、取消完成或跳过任务时，优先使用 `milk_task_complete`；不要用 `milk_calendar_mutate` 直接写 `finish`。
 - 只解释用户需要知道的变更，不暴露数据库字段或内部规则。
 
 ## 入口判断
@@ -86,7 +86,7 @@
    - 改时间：`start_time`，必要时 `end_time`
    - 改内容：`content`
    - 改类型：`type` 或 `item_type`，值只能是 `吸奶`、`亲喂`、`自定义`
-   - 改完成状态：`finish`
+   - 改完成状态：走 `milk_task_complete`，不要在这里构造 `finish`
 4. 用户确认后，调用 `milk_calendar_mutate(operation="update_item")`：
    - `user_id`
    - `item_id`
@@ -106,18 +106,18 @@
    - `operation="range_delete"`：删除范围内匹配条目，必须确保范围足够明确。
    - `operation="patch_items"`：先读取条目，再传 `patch={"updates":[{"item_id":..., "start_time":"09:00", "end_time":"09:30"}]}`。
 5. 返回更新后的范围摘要。
-6. 涉及完成状态 `finish` 的批量更新仍然不允许调用工具，走“完成状态同步”。
+6. 涉及完成状态 `finish` 的批量更新走“完成状态同步”。
 
 ## 完成状态同步
 
-暂时关闭 LLM 侧完成状态写入。
-
-1. 用户要把条目标记为完成、取消完成、确认全部完成，或修改任何 `finish` 状态时，不调用任何工具。
-2. 不先调用 `milk_calendar_query` 来核对当前日程。
-3. 直接温柔回复：“好的，这个需要您回到主界面的日历中操作完成，并记录具体时间和奶量哦。这样可以帮助我们更准确地评估您的泌乳状态。”
-4. 不说“系统不允许”“工具失败”“我无法直接修改”等内部原因。
-5. 不调用 `milk_calendar_mutate`。
-6. 服务层保留未来同步逻辑；当前对话入口不启用。
+1. 用户要把条目标记为完成、取消完成或跳过时，先定位具体任务；如无法定位，调用 `milk_calendar_query(query_mode="range")` 展示候选并请用户确认。
+2. 用户确认后调用 `milk_task_complete`：
+   - 完成：`operation="complete"`
+   - 取消完成：`operation="cancel_complete"`
+   - 跳过：`operation="skip"`
+3. 只有用户明确提供真实奶量或真实时长时，才传 `amount_ml` / `duration_minutes`；缺失时只更新完成状态，不要用计划值代替真实记录。
+4. 确认全部完成时，先查询未完成任务并向用户说明将影响的数量；用户确认后逐项调用 `milk_task_complete(operation="complete", record_kind="none")`。
+5. 不用 `milk_calendar_mutate` 直接写 `finish`，避免绕过记录同步逻辑。
 
 ## 删除条目
 

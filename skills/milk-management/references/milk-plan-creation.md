@@ -6,7 +6,9 @@
 
 - `milk_plan_preview` 只生成草稿，不写 `milk_plan`，也不写 `calendar`；只有返回 `plan_preview_ready` 且 `data.validation.valid=true` 时，草稿才可展示给用户确认保存。
 - `milk_plan_mutate(operation="create")` 只能在用户确认后调用。
-- create 后同时保存 `milk_plan`，并把计划日程展开写入 `calendar`。
+- create 后同时保存 `milk_plan`，并按用户确认的 `calendar_write_strategy` 把计划日程写入 `calendar`。
+- 如果 preview 的 `calendar_delta.has_existing_future_plan_tasks=true`，必须先向用户说明当前未来日程已有多少计划任务、新计划会生成多少任务，并让用户选择“追加到现有日程”还是“替换未来未完成计划任务”；不能替用户默认决定。
+- `calendar_write_strategy="append"` 表示保留已有未来任务并追加新计划；`calendar_write_strategy="replace_future_plan_tasks"` 表示删除未来未完成的旧计划任务后写入新计划。用户未选择时，不调用 `milk_plan_mutate`。
 - 不要承诺奶量一定增加、稳定或减少。
 
 ## 流程
@@ -62,11 +64,12 @@
    - 计划目标。
    - 执行天数。
    - 每日关键安排。
+   - 日程差异：当前未来已有计划任务数、新计划任务数、追加/替换后最终任务数。
    - 观察指标。
    - 安全提醒。
-3. 请用户选择：确认保存，或修改某一条任务/某个时间点/某一段阶段。
+3. 请用户选择：确认保存方式（追加或替换），或修改某一条任务/某个时间点/某一段阶段。没有已有未来计划任务时，可以只问“是否确认保存”。
 4. 如果 `milk_plan_preview` 返回 `plan_preview_needs_revision`、`plan_preview_not_recommended` 或 `data.validation.valid=false`，不要展示“确认保存”；只说明需要修改的点，并重新生成/调整草稿。
-5. 用户确认保存后，调用 `milk_plan_mutate(operation="create")`。
+5. 用户确认保存后，调用 `milk_plan_mutate(operation="create")`；如用户选择追加，传 `calendar_write_strategy="append"`；如用户选择替换，传 `calendar_write_strategy="replace_future_plan_tasks"`。
 6. 用户要求修改草稿时，按要求编辑完整草稿，再调用 `milk_plan_preview` 或 `milk_plan_mutate` 内部校验；校验通过并再次确认后，才调用 `milk_plan_mutate(operation="create")`。
 7. 修改边界：
    - 追奶：修改后吸奶任务次数必须大于当前吸奶次数；相邻两次吸奶间隔不超过 5 小时。
@@ -81,7 +84,7 @@
 - 没有明确目标奶量：确认计划方向后直接 `milk_plan_preview`。
 - 用户只想看状态，不要计划：`milk_snapshot_get` -> 需要时 `milk_assessment_evaluate`。
 - 用户担心宝宝增长或摄入：`infant_growth_evaluate`，再决定是否计划。
-- 用户要保存草稿：仅在上一次 `milk_plan_preview` 返回 `plan_preview_ready` 且 `data.validation.valid=true` 时，先确认，再 `milk_plan_mutate(operation="create")`。
+- 用户要保存草稿：仅在上一次 `milk_plan_preview` 返回 `plan_preview_ready` 且 `data.validation.valid=true` 时，先确认保存方式，再 `milk_plan_mutate(operation="create")`。
 - 用户要改草稿：先用 `milk_plan_preview` 重新生成或校验候选方案，通过并确认后再保存或更新。
 - 用户要改已保存计划：`milk_plan_query(plan_id=...)` -> `milk_plan_preview(source_plan_id=...)` -> 确认后 `milk_plan_mutate(operation="update")`。
 
@@ -127,10 +130,10 @@
 - 未知目标时，`milk_plan_preview` 负责生成默认追奶目标；用户主动提出目标奶量或增减量时，把目标作为 `target_daily_ml` 或 `delta_ml` 传入 `milk_plan_preview`。
 - 默认追奶目标：不低于当前奶量 +50ml；如果超过 P85 参考上限，应提示风险并不建议。
 - 每日产奶缺口 `<=300ml/天` 且当前吸奶+亲喂频率 `<8次/天`：目标频率为 8 次/天，新增次数为 `8 - 当前频率`。
-- 每日产奶缺口 `>300ml/天`，或当前吸奶+亲喂频率 `8-9次/天`：目标频率为 10 次/天，新增次数为 `10 - 当前频率`，并安排 1 次 PP 追奶。
+- 每日产奶缺口 `>300ml/天`，或当前吸奶+亲喂频率 `8-9次/天`：目标频率为 10 次/天，新增次数为 `10 - 当前频率`，并安排 1 次吸奶。
 - 新增吸奶优先放在昨日两次吸奶/亲喂之间较长空挡的中间，按开始时间计算。
 - 常规新增吸奶为双侧同时吸奶 15 分钟。
-- PP 追奶只能安排在第 1-7 天，每天 1 次：吸 20 分钟 -> 休息 10 分钟 -> 吸 10 分钟 -> 休息 10 分钟 -> 吸 10 分钟；第 8 天后改为常规吸奶。
+- 该次吸奶只能安排在第 1-7 天，每天 1 次：吸 20 分钟 -> 休息 10 分钟 -> 吸 10 分钟 -> 休息 10 分钟 -> 吸 10 分钟；第 8 天后改为常规吸奶。
 - 默认追奶计划按 1 个月生成。
 
 稳奶：

@@ -56,7 +56,19 @@ safety_limits:
 {
   "due_date_or_week": "37周",
   "birth_path": "顺产",
-  "packing_style": "标准"
+  "packing_style": "标准",
+  "feeding_intention": "母乳"
+}
+</confirmed_form_data>
+```
+
+```xml
+<confirmed_form_data form_id="birth_plan_card_intake">
+{
+  "due_date_or_week": "37周",
+  "birth_path": "刨腹产",
+  "top_priorities": "希望每一步先解释，并让伴侣参与重要决定。",
+  "communication_preferences": ["干预前先解释", "先征求同意"]
 }
 </confirmed_form_data>
 ```
