@@ -6,22 +6,21 @@ from typing import Any
 
 from ..types import RuntimeInputs
 
-PUMP_PRODUCT_URL = (
-    "https://sea.momcozy.com/collections/weekly-deals/products/"
-    "momcozy-mobile-style-hands-free-breast-pump?variant=46306441625789"
-)
-PUMP_PRODUCT_LINK = f"[sea.momcozy.com]({PUMP_PRODUCT_URL})"
+HOSPITAL_BAG_CART_URL = "/hospital-bag-cart"
+HOSPITAL_BAG_CART_LINK = f"[打开待产包一键打包下单页]({HOSPITAL_BAG_CART_URL})"
 PUMP_ITEM = {
     "label": "便携式吸奶器",
     "quantity": "1台",
     "priority": "recommended",
     "note": "如果计划母乳或混合喂养，可作为初期涨奶或追奶的备用选择；具体使用以医院和哺乳顾问建议为准。",
 }
-PUMP_ASSISTANT_FOLLOWUP = {
-    "kind": "optional_product_resource",
+HOSPITAL_BAG_CART_ASSISTANT_FOLLOWUP = {
+    "kind": "hospital_bag_cart",
     "message": (
-        "如果你还没有准备吸奶器，可以把它当作可选备用项先了解一下："
-        f"{PUMP_PRODUCT_LINK}。不一定现在购买，是否带去医院仍以医院和哺乳顾问建议为准。"
+        "我也把清单里适合直接购买的妈妈/宝宝母婴用品打包成了一个购物车，"
+        "证件、医院确认项和医疗相关内容不会放进去。\n\n"
+        f"**{HOSPITAL_BAG_CART_LINK}**\n\n"
+        "下单前记得删掉医院已提供、家里已有或医生不建议准备的物品。"
     ),
 }
 BIRTH_PLAN_DISCLAIMER = (
@@ -29,7 +28,11 @@ BIRTH_PLAN_DISCLAIMER = (
 )
 BIRTH_PLAN_ASSISTANT_FOLLOWUP = {
     "kind": "birth_plan_card_guidance",
-    "message": "你可以在产检或入院前把这张卡给医生/护士看，用它快速沟通你的重点偏好和需要讨论的问题。",
+    "message": "你可以提前和医院确认，并在产检或入院前把这张卡给医生/护士看，用它快速沟通你的重点偏好和需要讨论的问题。",
+}
+REMOVED_HOSPITAL_BAG_FORM_FIELD_IDS = {
+    "hospital_rules_or_notes",
+    "existing_checklist_or_photo_note",
 }
 PLACEHOLDER_VALUES = {"", "to confirm", "待确认", "未确定", "不确定", "none", "n/a"}
 BIRTH_PATH_ALIASES = {
@@ -48,15 +51,21 @@ BIRTH_PATH_ALIASES = {
 
 
 def create_form(args: dict[str, Any], inputs: RuntimeInputs) -> dict[str, Any]:
+    form_id = str(args.get("form_id", "form"))
+    fields = _normalize_form_fields(args.get("fields", []))
+    description = str(args.get("description", ""))
+    if form_id == "hospital_bag_intake":
+        fields = [field for field in fields if field.get("id") not in REMOVED_HOSPITAL_BAG_FORM_FIELD_IDS]
+        description = ""
     return {
         "tool_name": "ui_form_create",
         "status": "form_created",
         "form": {
-            "id": args.get("form_id", "form"),
+            "id": form_id,
             "title": args.get("title", ""),
-            "description": args.get("description", ""),
+            "description": description,
             "submit_label": args.get("submit_label", "确认"),
-            "fields": _normalize_form_fields(args.get("fields", [])),
+            "fields": fields,
         },
     }
 
@@ -87,17 +96,23 @@ def create_card(args: dict[str, Any], inputs: RuntimeInputs) -> dict[str, Any]:
 
 
 def _prepare_hospital_bag_card(card_json: dict[str, Any], inputs: RuntimeInputs) -> dict[str, str] | None:
-    if _formula_only_feeding_intention(inputs):
-        return None
+    title = str(card_json.get("title") or "").strip()
+    if not title or title in {"待产包卡片", "Hospital Bag Card"}:
+        card_json["title"] = "待产包"
+    elif "待产包卡片" in title:
+        card_json["title"] = title.replace("待产包卡片", "待产包")
 
     groups = card_json.get("packing_groups")
     if not isinstance(groups, list):
         groups = []
         card_json["packing_groups"] = groups
 
+    if _formula_only_feeding_intention(inputs):
+        return dict(HOSPITAL_BAG_CART_ASSISTANT_FOLLOWUP)
+
     group = _find_lactation_or_postpartum_group(groups)
     if group is None:
-        group = {"group_id": "lactation", "title": "哺乳用品", "items": []}
+        group = {"group_id": "postpartum", "title": "妈妈产后护理与哺乳用品", "items": []}
         insert_at = 1 if groups else 0
         groups.insert(insert_at, group)
 
@@ -108,7 +123,7 @@ def _prepare_hospital_bag_card(card_json: dict[str, Any], inputs: RuntimeInputs)
 
     _ensure_breast_pump_visible(items)
 
-    return dict(PUMP_ASSISTANT_FOLLOWUP)
+    return dict(HOSPITAL_BAG_CART_ASSISTANT_FOLLOWUP)
 
 
 def _prepare_birth_plan_card(card_json: dict[str, Any], inputs: RuntimeInputs) -> dict[str, str]:

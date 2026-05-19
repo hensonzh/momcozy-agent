@@ -643,19 +643,27 @@ function addFormCard(formSpec) {
   const node = document.createElement("form");
   node.className = "agent-form";
   node.dataset.formId = formSpec.id || "form";
+  const normalizedFormSpec = normalizeFormSpec(formSpec);
 
   const title = document.createElement("h2");
-  title.textContent = formSpec.title || "Confirm details";
+  title.textContent = normalizedFormSpec.title || "Confirm details";
   node.appendChild(title);
 
-  if (formSpec.description) {
+  if (normalizedFormSpec.description) {
     const description = document.createElement("p");
-    description.textContent = formSpec.description;
+    description.className = "agent-form-description";
+    description.textContent = normalizedFormSpec.description;
     node.appendChild(description);
   }
 
-  for (const field of formSpec.fields || []) {
-    node.appendChild(createFormField(field));
+  for (const group of groupFormFields(normalizedFormSpec.fields || [])) {
+    if (group.title) {
+      node.appendChild(createFormSection(group));
+      continue;
+    }
+    for (const field of group.fields) {
+      node.appendChild(createFormField(field));
+    }
   }
 
   const actions = document.createElement("div");
@@ -668,18 +676,18 @@ function addFormCard(formSpec) {
 
   node.addEventListener("submit", (event) => {
     event.preventDefault();
-    const validationMessage = validateFormSelection(node, formSpec);
+    const validationMessage = validateFormSelection(node, normalizedFormSpec);
     if (validationMessage) {
       addMessage("error", validationMessage);
       return;
     }
-    const values = collectFormValues(node, formSpec);
+    const values = collectFormValues(node, normalizedFormSpec);
     node.classList.add("submitted");
     for (const element of node.elements) {
       element.disabled = true;
     }
-    const summary = buildFormConfirmationMessage(formSpec, values);
-    sendUserText(summary, { displayText: `已提交：${formSpec.title || "表单"}` });
+    const summary = buildFormConfirmationMessage(normalizedFormSpec, values);
+    sendUserText(summary, { displayText: `已提交：${normalizedFormSpec.title || "表单"}` });
   });
 
   body.appendChild(node);
@@ -1082,20 +1090,44 @@ function renderBirthPlanCardV1(node, cardJson) {
 }
 
 function renderHospitalBagCardV1(node, cardJson) {
-  addCardHeader(node, cardJson.title || "Hospital Bag Card", hospitalBagSubtitle(cardJson) || cardJson.subtitle || "");
+  addCardHeader(node, hospitalBagTitle(cardJson.title), hospitalBagSubtitle(cardJson) || cardJson.subtitle || "");
   addPackingGroups(node, compactPackingGroups(cardJson.packing_groups));
-  addListSection(node, "Confirm With Hospital", limitList(cardJson.hospital_context?.items_to_confirm_with_hospital, 3));
   addListSection(node, "Timeline", limitList(cardJson.timeline, 2));
   addDisclaimer(node, cardJson.disclaimer);
 }
 
+function hospitalBagTitle(value) {
+  const title = String(value || "").trim();
+  if (!title || title === "待产包卡片" || title === "Hospital Bag Card") return "待产包";
+  if (title.includes("待产包卡片")) return title.replaceAll("待产包卡片", "待产包");
+  return title;
+}
+
 function hospitalBagSubtitle(cardJson) {
   const owner = cardJson.owner || {};
-  const hospital = cardJson.hospital_context || {};
-  const values = [owner.due_date_or_week, owner.birth_path, owner.packing_style, hospital.expected_stay]
+  const values = [hospitalBagMetaValue(owner.due_date_or_week), hospitalBagMetaValue(owner.birth_path), hospitalBagMetaValue(owner.feeding_intention)]
     .filter((value) => hasDisplayValue(value) && !isConfirmPlaceholder(value))
     .map(formatPlainValue);
   return values.join(" | ");
+}
+
+function hospitalBagMetaValue(value) {
+  const text = String(value || "").trim();
+  const labels = {
+    breastfeeding: "母乳喂养",
+    "母乳": "母乳喂养",
+    formula: "配方喂养",
+    "配方": "配方喂养",
+    formula_feeding: "配方喂养",
+    mixed: "混合喂养",
+    "混合": "混合喂养",
+    vaginal: "顺产",
+    planned_c_section: "刨腹产",
+    c_section: "刨腹产",
+    "计划剖宫产": "刨腹产",
+    "剖腹产": "刨腹产",
+  };
+  return labels[text.toLowerCase()] || value;
 }
 
 function normalizeBirthPlanCard(cardJson) {
@@ -1300,7 +1332,7 @@ function addListSection(node, title, values, options = {}) {
 
 function addPackingGroups(node, groups) {
   if (!Array.isArray(groups) || !groups.length) return;
-  const section = createCardSection("Packing List");
+  const section = createCardSection("物品清单");
   for (const group of groups) {
     if (!group || typeof group !== "object") continue;
     const groupNode = document.createElement("div");
@@ -1359,7 +1391,8 @@ function priorityLabel(priority) {
     must: "Essential",
     recommended: "Helpful",
     nice_to_have: "Optional",
-    confirm_first: "Confirm",
+    confirm_first: "和医院确认",
+    先确认: "和医院确认",
   };
   return labels[String(priority || "")] || formatLabel(priority);
 }
@@ -1412,6 +1445,68 @@ function createFormField(field) {
   }
 
   return wrapper;
+}
+
+function normalizeFormSpec(formSpec) {
+  const removedHospitalBagFieldIds = new Set(["hospital_rules_or_notes", "existing_checklist_or_photo_note"]);
+  if (formSpec?.id !== "hospital_bag_intake") return formSpec;
+  return {
+    ...formSpec,
+    description: "",
+    fields: (formSpec.fields || []).filter((field) => !removedHospitalBagFieldIds.has(field?.id)),
+  };
+}
+
+function groupFormFields(fields) {
+  const groups = [];
+  const groupByTitle = new Map();
+
+  for (const field of fields) {
+    const labelParts = splitFormFieldLabel(field.label);
+    const title = labelParts.groupTitle;
+    const key = title || "__ungrouped";
+    let group = groupByTitle.get(key);
+    if (!group) {
+      group = { title, fields: [] };
+      groupByTitle.set(key, group);
+      groups.push(group);
+    }
+    group.fields.push({ ...field, label: labelParts.fieldLabel });
+  }
+
+  return groups;
+}
+
+function splitFormFieldLabel(label) {
+  const text = String(label || "");
+  const separatorIndex = text.indexOf("｜");
+  if (separatorIndex <= 0) return { groupTitle: "", fieldLabel: text };
+
+  const groupTitle = text.slice(0, separatorIndex).trim();
+  const fieldLabel = text.slice(separatorIndex + 1).trim();
+  if (!groupTitle || !fieldLabel) return { groupTitle: "", fieldLabel: text };
+  return { groupTitle, fieldLabel };
+}
+
+function createFormSection(group) {
+  const section = document.createElement("section");
+  section.className = "agent-form-section";
+
+  const header = document.createElement("div");
+  header.className = "agent-form-section-header";
+  const heading = document.createElement("h3");
+  heading.textContent = group.title;
+  header.appendChild(heading);
+  section.appendChild(header);
+
+  const fields = document.createElement("div");
+  fields.className = "agent-form-section-fields";
+  for (const field of group.fields) {
+    fields.appendChild(createFormField(field));
+  }
+  section.appendChild(fields);
+
+  return section;
 }
 
 function createCheckboxGroup(field) {
@@ -1490,7 +1585,7 @@ function validateFormSelection(node, formSpec) {
     if (new FormData(node).getAll(field.id).length) continue;
     const group = node.querySelector(`[name="${cssEscape(field.id)}"]`)?.closest(".agent-form-checkbox-group");
     if (group) group.classList.add("invalid");
-    return `请选择：${field.label}`;
+    return `请选择：${splitFormFieldLabel(field.label).fieldLabel}`;
   }
   return "";
 }

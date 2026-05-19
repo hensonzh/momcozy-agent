@@ -28,6 +28,28 @@ def main() -> None:
     assert "service_selection: model_selects_service_skill_from_manifest" in initial_request["instructions"]
     assert "skill_manifest:" in initial_request["instructions"]
     assert "global_safety_policy:" in initial_request["instructions"]
+    assert "全局响应风格设计" in initial_request["instructions"]
+    assert "先接住人，再处理事" in initial_request["instructions"]
+    assert "适用于所有服务" in initial_request["instructions"]
+    assert "人味与共鸣写法" in initial_request["instructions"]
+    assert "共鸣不是一句客套话" in initial_request["instructions"]
+    assert "最终回复可见性规则" in initial_request["instructions"]
+    assert "不要把情绪承接、安全边界、关键澄清或下一步行动只写在工具调用前" in initial_request["instructions"]
+    assert "中性事实、普通问候、简单确认" in initial_request["instructions"]
+    assert "不强行煽情" in initial_request["instructions"]
+    assert "如果本轮有情绪、紧迫、挫败或风险感" in initial_request["instructions"]
+    assert "先表达轻柔祝贺" in initial_request["instructions"]
+    assert "最终回复必须先轻柔祝贺并简短共鸣" in initial_request["instructions"]
+    assert "最终一轮面向用户的回复必须按上面的响应优先级重新组织" in initial_request["instructions"]
+    assert "最终一轮面向用户的回复必须重新自然体现情绪承接" not in initial_request["instructions"]
+    assert "我要生孩子了" in initial_request["instructions"]
+    assert "物品准备类问题" in initial_request["instructions"]
+    assert "去医院前准备什么/提前准备些什么/要带什么" in initial_request["instructions"]
+    assert "按待产包服务处理" in initial_request["instructions"]
+    assert "入院时机、症状判断或风险不确定问题" in initial_request["instructions"]
+    assert "服务邀约后的短确认承接协议" in initial_request["instructions"]
+    assert "单一、明确的服务动作" in initial_request["instructions"]
+    assert "多个服务选项" in initial_request["instructions"]
     assert "skill_manifest:" not in initial_request["input"][0]["content"][0]["text"]
     assert initial_request["input"][0]["content"][1]["text"].startswith("user_message:")
     assert "tool_search" in initial_tool_types
@@ -141,6 +163,101 @@ def main() -> None:
     assert loaded["name"] == "milk-management"
     assert isinstance(loaded["description"], str) and loaded["description"]
 
+    birth_prep_skill = execute_skill_runtime_tool("load_skill", {"skill_id": "birth-prep"})
+    assert "临产表达的回应节奏" in birth_prep_skill["skill_md"]
+    assert "第一反应不是清单" in birth_prep_skill["skill_md"]
+    assert "在最终回复里先轻柔祝贺" in birth_prep_skill["skill_md"]
+    assert "最终回复先表达祝贺和情感共鸣" in birth_prep_skill["skill_md"]
+    assert "先恭喜你，宝宝可能快要来了" in birth_prep_skill["skill_md"]
+    assert "服务邀约承接" in birth_prep_skill["skill_md"]
+    assert "待产包服务入口确认" in birth_prep_skill["skill_md"]
+    assert "默认先不调用 `ui_form_create`" in birth_prep_skill["skill_md"]
+    assert "已有信息会先填好" in birth_prep_skill["skill_md"]
+    assert "字段的 `default_value`" in birth_prep_skill["skill_md"]
+    assert 'ui_form_create(form_id="hospital_bag_intake")' in birth_prep_skill["skill_md"]
+    birth_plan_reference = execute_skill_runtime_tool(
+        "read_skill_file",
+        {"skill_id": "birth-prep", "kind": "references", "path": "references/birth-plan-card.md"},
+    )["content"]
+    assert "创建 `ui_form_create` 后，最终回复里输出一句简短引导" in birth_plan_reference
+    assert "只放在工具调用前的中间态" in birth_plan_reference
+    hospital_bag_reference = execute_skill_runtime_tool(
+        "read_skill_file",
+        {"skill_id": "birth-prep", "kind": "references", "path": "references/hospital-bag-service.md"},
+    )["content"]
+    assert "基本信息｜预产期或当前孕周" in hospital_bag_reference
+    assert "生产信息｜计划分娩方式" in hospital_bag_reference
+    assert "医院信息｜已知医院会提供的物品" in hospital_bag_reference
+    assert "偏好信息｜喂养意向" in hospital_bag_reference
+    assert "BMI 或身高体重情况" in hospital_bag_reference
+    assert "不要创建仅用于装饰的假字段" in hospital_bag_reference
+    assert "首次进入待产包服务时先做服务邀约，不直接创建表单" in hospital_bag_reference
+    assert "用户确认开始后，再创建 `hospital_bag_intake` 表单" in hospital_bag_reference
+    assert "`description`: 留空字符串" in hospital_bag_reference
+    assert "先确认几件关键背景" not in hospital_bag_reference
+    assert "default_value" in hospital_bag_reference
+    assert "已知孕周或预产期 -> `due_date_or_week.default_value`" in hospital_bag_reference
+    assert "未知信息不要编造默认值" in hospital_bag_reference
+    assert "packing_style" not in hospital_bag_reference
+    assert "hospital_rules_or_notes" not in hospital_bag_reference
+    assert "existing_checklist_or_photo_note" not in hospital_bag_reference
+    assert "已知医院规则或注意事项" not in hospital_bag_reference
+    assert "已有医院清单或产检材料说明" not in hospital_bag_reference
+    assert "清单风格" not in hospital_bag_reference
+    assert "极简" not in hospital_bag_reference
+    assert "预算优先" not in hospital_bag_reference
+
+    prefilled_hospital_bag_form = execute_tool(
+        "ui_form_create",
+        {
+            "form_id": "hospital_bag_intake",
+            "title": "信息采集",
+            "description": "先确认几件关键背景，帮你少带错、少漏带。",
+            "submit_label": "生成我的卡片",
+            "fields": [
+                {
+                    "id": "due_date_or_week",
+                    "label": "基本信息｜预产期或当前孕周",
+                    "type": "text",
+                    "required": True,
+                    "default_value": "37 周",
+                },
+                {
+                    "id": "birth_path",
+                    "label": "生产信息｜计划分娩方式",
+                    "type": "select",
+                    "required": True,
+                    "options": ["顺产", "刨腹产", "未确定"],
+                    "default_value": "顺产",
+                },
+                {
+                    "id": "hospital_rules_or_notes",
+                    "label": "医院信息｜已知医院规则或注意事项",
+                    "type": "textarea",
+                    "required": False,
+                },
+                {
+                    "id": "existing_checklist_or_photo_note",
+                    "label": "医院信息｜已有医院清单或产检材料说明",
+                    "type": "textarea",
+                    "required": False,
+                },
+            ],
+        },
+        {
+            "user_message": "好",
+            "locale": "zh-CN",
+            "timezone": "Asia/Shanghai",
+            "message_sent_at": "2026-05-04T20:00:00+08:00",
+        },
+    )
+    prefilled_fields = {field["id"]: field for field in prefilled_hospital_bag_form["form"]["fields"]}
+    assert prefilled_hospital_bag_form["form"]["description"] == ""
+    assert prefilled_fields["due_date_or_week"]["default_value"] == "37 周"
+    assert prefilled_fields["birth_path"]["default_value"] == "顺产"
+    assert "hospital_rules_or_notes" not in prefilled_fields
+    assert "existing_checklist_or_photo_note" not in prefilled_fields
+
     pump_skill = execute_skill_runtime_tool("load_skill", {"skill_id": "device-guidance"})
     assert "references/air1/faq.md" in pump_skill["references"]
     assert "references/air1/manual.md" in pump_skill["references"]
@@ -180,7 +297,7 @@ def main() -> None:
             "card_type": "hospital_bag_card",
             "schema_version": "1.0",
             "card_json": {
-                "title": "待产包卡片",
+                "title": "待产包",
                 "packing_groups": [
                     {"group_id": "documents", "title": "证件资料包", "items": []},
                     {"group_id": "baby", "title": "宝宝出院包", "items": []},
@@ -199,7 +316,8 @@ def main() -> None:
     )
     assert pump_item_index < 4, "吸奶器应在紧凑版卡片中保持可见"
     assert "assistant_followup" in hospital_bag_card
-    assert "sea.momcozy.com" in hospital_bag_card["assistant_followup"]["message"]
+    assert "/hospital-bag-cart" in hospital_bag_card["assistant_followup"]["message"]
+    assert "一键打包下单页" in hospital_bag_card["assistant_followup"]["message"]
 
     birth_plan_card = execute_tool(
         "ui_card_create",
@@ -392,6 +510,13 @@ def main() -> None:
         )
         assert isinstance(skill["safety_limits"], list) and skill["safety_limits"], (
             f"{skill['id']} must declare safety_limits in SKILL.md frontmatter"
+        )
+        skill_doc = execute_skill_runtime_tool("load_skill", {"skill_id": skill["id"]})["skill_md"]
+        assert "全局响应风格" in skill_doc, (
+            f"{skill['id']} must explicitly inherit the global response style"
+        )
+        assert "服务邀约承接" in skill_doc, (
+            f"{skill['id']} must define how short confirmations continue service offers"
         )
 
     _assert_strict_function_schemas(initial_request["tools"])

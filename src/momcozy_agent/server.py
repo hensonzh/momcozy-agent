@@ -546,6 +546,8 @@ def _should_send_assistant_followup(followup: str, current_text: str) -> bool:
         return False
     if "sea.momcozy.com" in followup and "sea.momcozy.com" in current_text:
         return False
+    if "/hospital-bag-cart" in followup and "/hospital-bag-cart" in current_text:
+        return False
     return True
 
 

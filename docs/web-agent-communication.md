@@ -683,6 +683,8 @@ Agent 状态通过 `CUSTOM` / `momcozy.agent.status` 发送：
 
 这个设计用于区分“loop 中间过程”和“最终回答”。
 
+业务响应约束：情绪承接、安全边界和关键下一步不能只出现在中间 assistant text。模型需要在最后一轮 assistant text 中重新自然体现这些内容，尤其是产前、奶量、宝宝健康、设备受挫和情绪支持场景。
+
 ### 7.3 Work panel
 
 work panel 由前端根据工具事件生成，不是后端直接返回 HTML。

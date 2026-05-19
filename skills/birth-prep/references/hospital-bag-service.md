@@ -17,118 +17,153 @@
 
 ## 待产包表单字段
 
-表单门控和提交后的通用流程由主 `SKILL.md` 统一规定：没有 `confirmed_form_data` 时先创建表单，用户提交后再生成结构化卡片。本参考只定义待产包服务专属的 `hospital_bag_intake` 表单字段和兼容规则。
+表单门控和提交后的通用流程由主 `SKILL.md` 统一规定：首次进入待产包服务时先做服务邀约，不直接创建表单；用户确认开始后，再创建 `hospital_bag_intake` 表单；用户提交后再生成结构化卡片。本参考只定义待产包服务专属的表单字段、预填规则和兼容规则。
 
 使用：
 
 - `form_id`: `hospital_bag_intake`
 - `title`: `信息采集`
-- `description`: `确认几个背景信息后，我会按你的孕周、分娩方式、喂养意向和待产清单风格生成个性化待产包卡片。`
+- `description`: 留空字符串，不在表单标题下展示说明文字。
 - `submit_label`: `生成我的卡片`
 
 表单字段必须使用以下稳定 schema。`ui_form_create.fields` 里的每个字段都需要表示为 JSON object string。
 
-`packing_style` 是内部稳定字段 id，不能改名；但用户可见 label 必须写成“待产清单风格”。
+创建表单前，优先复用当前对话、`request_context`、上一轮服务邀约中已经明确的信息；如上下文不足，可以先调用 `profile_get` 读取已有孕期、生产地点、支持人或偏好信息。只要某个字段已经有可靠信息，就在对应 field object 上写入 `default_value`。不要把已知信息只写在普通回复里，也不要让用户重复填写。
 
-必填字段只覆盖生成有价值待产包卡片所需的最低信息；可选字段允许为空，并在 `card_json` 中标为 `"待确认"`、写入 `missing_fields`，或放入 `hospital_context.items_to_confirm_with_hospital`。
+预填映射：
+
+- 已知孕周或预产期 -> `due_date_or_week.default_value`
+- 已知是否第一胎 -> `first_birth.default_value`
+- 已知顺产/刨腹产/未确定 -> `birth_path.default_value`
+- 已知母乳/配方/混合/未确定 -> `feeding_intention.default_value`
+- 已知年龄 -> `age.default_value`
+- 已知 BMI、身高体重或行动便利相关信息 -> `bmi_or_weight_context.default_value`
+- 已知妊娠病史、过敏、医生提醒或特殊注意事项 -> `pregnancy_history_or_notes.default_value`
+- 已知医院、地区、生产地点或入院机构 -> `birth_setting.default_value`
+- 已知预计住院时长 -> `expected_stay.default_value`
+- 已知陪产人或支持人情况 -> `support_person.default_value`
+- 已知医院提供物品 -> `hospital_provided_items.default_value`
+
+只有用户明确提供、`profile_get` 返回，或当前上下文可以稳定继承的信息才可预填；如果只是模型推测、风险不确定或存在冲突，留空并用 `placeholder`/`help_text` 引导用户确认。
+
+当前前端表单协议没有单独的 section/header 字段。为了实现分类呈现，`hospital_bag_intake` 字段必须按下方顺序排列，并在用户可见 `label` 前使用分组前缀：
+
+- `基本信息｜...`
+- `生产信息｜...`
+- `医院信息｜...`
+- `偏好信息｜...`
+
+不要创建仅用于装饰的假字段；所有字段都应是可填写或可选择的信息。
+
+不要再收集用于控制清单长短或购买策略的单独字段。清单密度由孕周、是否临近入院、分娩方式、住院时长、医院已提供物品、是否第一胎和喂养意向共同决定。
+
+必填字段只覆盖生成有价值待产包卡片所需的最低信息，控制在 4 个；可选字段允许为空，并在 `card_json` 中标为 `"待确认"`、写入 `missing_fields`，或放入 `hospital_context.items_to_confirm_with_hospital`。
+
+表单体验原则：
+
+- 不要让表单像医疗问卷；文案应强调“少带错、少漏带、少重复买”。
+- 年龄、BMI、妊娠病史或特殊注意事项都只能作为待产包个性化和医院确认项参考，不能用于诊断、风险分级或医疗建议。
+- 如果用户已上传产检材料、医院清单或 B 超单图片，只能基于当前可见内容辅助提取待确认信息；不要因此新增表单字段，不要根据图片作医学判断，关键信息仍需要用户确认。
 
 必填字段：
 
 ```json
 [
-  {
-    "id": "due_date_or_week",
-    "label": "预产期或当前孕周",
-    "type": "text",
-    "required": true,
-    "placeholder": "例如：2026-06-12 或 37 周",
-    "help_text": "用于判断准备阶段、清单密度和优先级。"
-  },
-  {
-    "id": "birth_path",
-    "label": "计划分娩方式",
-    "type": "select",
-    "required": true,
-    "options": ["顺产", "刨腹产", "未确定"],
-    "help_text": "如果还没确定，可以选择“未确定”。"
-  },
-  {
-    "id": "packing_style",
-    "label": "待产清单风格",
-    "type": "select",
-    "required": true,
-    "options": ["极简", "标准", "完整", "预算优先"],
-    "help_text": "用于控制清单长度、备用物品和购买优先级。"
-  },
-  {
-    "id": "first_birth",
-    "label": "是否第一胎",
-    "type": "select",
-    "required": true,
-    "options": ["是", "否", "不确定"],
-    "help_text": "第一胎通常需要更多医院确认问题和支持人提示。"
-  },
-  {
-    "id": "feeding_intention",
-    "label": "喂养意向",
-    "type": "select",
-    "required": true,
-    "options": ["母乳", "配方", "混合", "未确定"],
-    "help_text": "会影响哺乳用品、吸奶器、储奶和奶瓶相关物品是否进入重点清单。"
-  }
-]
-```
+	  {
+	    "id": "due_date_or_week",
+	    "label": "基本信息｜预产期或当前孕周",
+	    "type": "text",
+	    "required": true,
+	    "placeholder": "例如：2026-06-12 或 37 周",
+	    "help_text": "用于判断准备阶段、清单密度和优先级。"
+	  },
+	  {
+	    "id": "first_birth",
+	    "label": "基本信息｜是否第一胎",
+	    "type": "select",
+	    "required": true,
+	    "options": ["是", "否", "不确定"],
+	    "help_text": "第一胎通常需要更多医院确认问题和支持人提示。"
+	  },
+	  {
+	    "id": "birth_path",
+	    "label": "生产信息｜计划分娩方式",
+	    "type": "select",
+	    "required": true,
+	    "options": ["顺产", "刨腹产", "未确定"],
+	    "help_text": "如果还没确定，可以选择“未确定”。"
+	  },
+	  {
+	    "id": "feeding_intention",
+	    "label": "偏好信息｜喂养意向",
+	    "type": "select",
+	    "required": true,
+	    "options": ["母乳", "配方", "混合", "未确定"],
+	    "help_text": "会影响哺乳用品、吸奶器、储奶和奶瓶相关物品是否进入重点清单。"
+	  }
+	]
+	```
 
 可选字段：
 
 ```json
-[
-  {
-    "id": "birth_setting",
-    "label": "医院、地区或生产地点",
-    "type": "text",
-    "required": false,
-    "placeholder": "例如：某某医院、公立医院、私立医院、月子中心配套医院，或暂未确定"
-  },
-  {
-    "id": "expected_stay",
-    "label": "预计住院时长",
-    "type": "select",
-    "required": false,
-    "options": ["不确定", "1 天", "2-3 天", "4 天或以上", "医生/医院建议为准"]
-  },
-  {
-    "id": "support_person",
-    "label": "陪产人或支持人情况",
-    "type": "select",
-    "required": false,
-    "options": ["有，且需要准备物品", "有，但不需要准备物品", "暂时没有", "不确定"]
-  },
-  {
-    "id": "hospital_provided_items",
-    "label": "已知医院会提供的物品",
-    "type": "textarea",
-    "required": false,
-    "placeholder": "例如：产褥垫、纸尿裤、宝宝衣物、奶瓶、毛巾。不确定可留空。"
-  },
-  {
-    "id": "hospital_rules_or_notes",
-    "label": "已知医院规则或注意事项",
-    "type": "textarea",
-    "required": false,
-    "placeholder": "例如：陪产限制、食物规则、拍照录像规则、入院材料要求。不确定可留空。"
-  },
-  {
-    "id": "existing_checklist_or_photo_note",
-    "label": "已有医院清单或照片信息",
-    "type": "textarea",
-    "required": false,
-    "placeholder": "如果医院发过清单，可以粘贴关键内容；如果已上传图片，写“已上传图片”。"
-  }
-]
-```
+	[
+	  {
+	    "id": "age",
+	    "label": "基本信息｜妈妈年龄",
+	    "type": "text",
+	    "required": false,
+	    "placeholder": "例如：32；不想填可以留空",
+	    "help_text": "只用于调整待产包提示的细致程度，不做医学判断。"
+	  },
+	  {
+	    "id": "bmi_or_weight_context",
+	    "label": "基本信息｜BMI 或身高体重情况",
+	    "type": "text",
+	    "required": false,
+	    "placeholder": "例如：BMI 24，或身高体重；不确定可留空",
+	    "help_text": "用于判断衣物、护理和行动便利提示；不用于诊断。"
+	  },
+	  {
+	    "id": "pregnancy_history_or_notes",
+	    "label": "基本信息｜妊娠病史或特殊注意事项",
+	    "type": "textarea",
+	    "required": false,
+	    "placeholder": "例如：妊娠糖尿病、过敏史、医生提醒、行动不便等；没有可留空。",
+	    "help_text": "只用于生成医院确认项和待产包提醒，具体医疗安排以医生为准。"
+	  },
+	  {
+	    "id": "birth_setting",
+	    "label": "医院信息｜医院、地区或生产地点",
+	    "type": "text",
+	    "required": false,
+	    "placeholder": "例如：某某医院、公立医院、私立医院、月子中心配套医院，或暂未确定"
+	  },
+	  {
+	    "id": "expected_stay",
+	    "label": "生产信息｜预计住院时长",
+	    "type": "select",
+	    "required": false,
+	    "options": ["不确定", "1 天", "2-3 天", "4 天或以上", "医生/医院建议为准"]
+	  },
+	  {
+	    "id": "support_person",
+	    "label": "生产信息｜陪产人或支持人情况",
+	    "type": "select",
+	    "required": false,
+	    "options": ["有，且需要准备物品", "有，但不需要准备物品", "暂时没有", "不确定"]
+	  },
+	  {
+	    "id": "hospital_provided_items",
+	    "label": "医院信息｜已知医院会提供的物品",
+	    "type": "textarea",
+	    "required": false,
+	    "placeholder": "例如：产褥垫、纸尿裤、宝宝衣物、奶瓶、毛巾。不确定可留空。"
+	  }
+	]
+	```
 
-生成 `ui_form_create` 时，可以把必填字段和可选字段放在同一个 `fields` 数组中，但必须保持这些稳定 `id`、`type` 和 `required` 值。
+生成 `ui_form_create` 时，可以把必填字段和可选字段放在同一个 `fields` 数组中，但必须保持这些稳定 `id`、`type` 和 `required` 值。已知信息必须通过 `default_value` 进入对应字段；未知信息不要编造默认值。
 
 ## 表单提交后
 
@@ -170,31 +205,30 @@
 
 不要把很长的 markdown 清单当作卡片数据源。可以附一段简短说明，但卡片本身必须通过 `ui_card_create` 传递结构化 JSON。
 
-默认生成“摘要 + 完整分组清单”的移动端卡片。前端会把分组渲染为可折叠清单，因此可以比旧版更具体，但仍要避免机械堆砌和重复。
+默认生成“个性化说明 + 完整分组清单”的移动端卡片。前端会把分组渲染为可折叠清单，因此可以比旧版更具体，但仍要避免机械堆砌和重复。
 
 待产包卡片必须体现“个性化”，不能只是把参考清单原样搬运。个性化体现在：
 
-- `owner`：展示用户已确认的孕周/预产期、计划分娩方式、待产清单风格、喂养意向、是否第一胎等。
+- `owner`：展示用户已确认的孕周/预产期、计划分娩方式、喂养意向、是否第一胎、医院或地区等。
 - `packing_groups`：根据用户情况裁剪、保留或降级物品；不是每次都全量输出参考清单。
 - `priority`：用 `must`、`recommended`、`nice_to_have`、`confirm_first` 区分必带物品、建议物品、可选物品和需要先和医院确认的物品。
 - `quantity`：只用于消耗品、衣物、护理用品、宝宝用品等数量会影响准备的物品；证件资料和通讯随身设备通常不要写数量。
 - `copy_requirement`：用于证件资料，表达是否需要复印件，例如 `"原件"`、`"原件+复印件"`；`confirm_first` 物品不要写 `copy_requirement`。
 - `personalized_notes`：明确说明这张清单为什么这样调整，例如“你选择母乳，因此保留哺乳用品和吸奶器备用项”。
-- `focus_items`：稳定的“必带物品”区，不等于所有 `priority: "must"`，必须按固定规则挑出用户最需要先打包、忘带影响最大的 5-7 项。
-- `hospital_questions`：稳定的医院确认问题区，来自固定问题库，再根据用户信息裁剪排序；每条必须使用“物品/规则：一句话解释”的结构。
+- `focus_items`：兼容字段，前端不再默认渲染为独立“必带物品”模块；若生成，只保留最需要先打包、忘带影响最大的 5-7 项，不要依赖它传达核心内容。
+- `hospital_questions`：兼容字段，前端不再默认渲染为独立“先和医院确认”模块；若生成，每条仍使用“物品/规则：一句话解释”的结构。
 - `hospital_context.items_to_confirm_with_hospital`：明确写出“哪些物品/规则需要问医院”，不要只写泛泛的“按医院要求”。
 
 清单密度规则：
 
 - `packing_groups` 是主清单，最多 8 个分组。
 - 每组最多 8 个 items；全卡片主清单通常控制在 24-48 个 items。
-- `极简`：约 16-24 个 items，只保留关键必带和少量建议。
-- `标准`：约 28-40 个 items，覆盖多数住院场景。
-- `完整`：约 40-55 个 items，加入备用、舒适和陪产人补充。
-- `预算优先`：约 24-36 个 items，优先必需品，标注“可先和医院确认/可后买”的内容。
+- 临近入院或用户明显紧张时，优先压缩到最容易执行的必带和医院确认项，避免增加负担。
+- 用户孕周较早且时间充裕时，可以覆盖更完整的分组，但仍应避免机械堆砌。
+- 医院已明确提供的物品应降级或移出主清单，不要为了凑数量保留重复物品。
 - `hospital_context.items_to_confirm_with_hospital` 最多 5 条，只放必须向医院确认的问题。
-- `focus_items` 最多 7 条，优先放“入院马上需要、忘带影响最大”的物品，不要机械复制所有必带项。
-- `hospital_questions` 最多 8 条，必须是明确可问医院的问题，并统一写成“物品/规则：一句话解释”。
+- `focus_items` 最多 7 条，仅作为兼容数据，优先放“入院马上需要、忘带影响最大”的物品，不要机械复制所有必带项。
+- `hospital_questions` 最多 8 条，仅作为兼容数据，必须是明确可问医院的问题，并统一写成“物品/规则：一句话解释”。
 - `timeline` 最多 3 条，偏行动导向，不要展开成详细计划。
 - `personalized_notes` 最多 3 条，只放真正个性化且没有在其他分区出现过的提醒。
 - 不要同时在 `packing_groups`、`focus_items`、`hospital_questions`、`personalized_notes` 中重复同一句话或同一物品说明。
@@ -206,13 +240,12 @@
 {
   "card_type": "hospital_bag_card",
   "schema_version": "1.0",
-  "title": "待产包卡片",
-  "subtitle": "个性化入院待产清单",
+  "title": "待产包",
+  "subtitle": "个性化入院物品清单",
   "owner": {
     "due_date_or_week": "待确认",
     "birth_setting": "待确认",
     "birth_path": "待确认",
-    "packing_style": "标准",
     "first_birth": "待确认",
     "feeding_intention": "待确认",
     "support_person": "待确认"
@@ -220,7 +253,6 @@
   "hospital_context": {
     "expected_stay": "待确认",
     "hospital_provided_items": [],
-    "hospital_rules_or_notes": [],
     "items_to_confirm_with_hospital": [
       "胎监带：确认医院是否要求自带，以及需要几条。",
       "宝宝纸尿裤和衣物：确认医院是否提供，避免重复携带。"
@@ -271,20 +303,20 @@
   - 手机、充电器、充电宝、耳机等通讯随身设备通常不写数量；用户默认只带自己的常用设备。
   - 消耗品和多件物品才写数量，例如产褥垫、卫生巾、一次性内裤、纸巾、宝宝衣物、包被。
 - `copy_requirement` 只用于证件资料，取值示例：`"原件"`、`"原件+复印件"`。
-- 当 `priority` 是 `confirm_first` 时，不要写 `quantity` 或 `copy_requirement`；待产清单里只需要物品名和“先确认”标签，解释放到 `confirm_question`、`hospital_questions` 或 `hospital_context.items_to_confirm_with_hospital`。
+- 当 `priority` 是 `confirm_first` 时，不要写 `quantity` 或 `copy_requirement`；待产清单里只需要物品名和“和医院确认”标签，解释放到 `confirm_question`、`hospital_questions` 或 `hospital_context.items_to_confirm_with_hospital`。
 - 每个物品标签保持简洁，便于移动端卡片扫读。
 - 当 `priority` 是 `confirm_first` 时，必须写清楚原因：
   - 优先在 `confirm_question` 中写一句可直接问医院的问题，例如 `"确认医院是否提供脸盆；如果提供，可以不带。"`。
   - 不要在 `note`、`quantity` 或 `copy_requirement` 里写 `"按医院要求确认"`、`"按医院要求"`、`"按需要"` 这类泛化补充信息。
   - 相关问题必须同步写入 `hospital_context.items_to_confirm_with_hospital`，并带上物品名。
 - App 端根据 `card_json` 的分区 key 自行决定渲染分区；模型不要输出 markdown 版待产包卡片。
-- `focus_items` 和 `hospital_questions` 是前端主展示区的数据源。必须生成，除非用户明确只要极简文字版。
+- `focus_items` 和 `hospital_questions` 是兼容数据源，不是前端默认独立展示区；核心清单内容必须体现在 `packing_groups`，个性化原因必须体现在 `personalized_notes`。
 
 priority 取值：
 
 - `must`：通常应准备的入院关键物品，例如证件资料、支付材料、手机充电器、宝宝出院基础物品。
 - `recommended`：多数用户有帮助，但不是所有医院或所有用户都必须准备。
-- `nice_to_have`：舒适或备用物品；预算优先或临近生产时可以减少。
+- `nice_to_have`：舒适或备用物品；临近生产或客观条件不需要时可以减少。
 - `confirm_first`：不要直接当作必带物品；应先向医院确认是否允许、是否需要或是否由医院提供。
 
 字段缺失规则：
@@ -292,13 +324,13 @@ priority 取值：
 - 字段在 schema 中有固定位置但用户未提供时，使用 `"待确认"`。
 - 缺失信息会影响个性化、清单优先级或住院准备判断时，写入 `missing_fields`。
 - 医院政策、医院是否提供物品或入院规则未知时，优先写入 `hospital_context.items_to_confirm_with_hospital`，不要编造。
-- `hospital_provided_items` 保存用户已确认医院会提供的物品；`hospital_rules_or_notes` 保存用户已知规则；`items_to_confirm_with_hospital` 保存仍需要用户向医院确认的问题。
+- `hospital_provided_items` 保存用户已确认医院会提供的物品；`items_to_confirm_with_hospital` 保存仍需要用户向医院确认的问题、医院政策或入院规则，不再单独收集医院规则说明字段。
 
 数组关系：
 
 - `packing_groups` 是完整卡片清单，按使用场景分组。
-- `focus_items` 是“必带物品”摘要，来源于固定规则和用户阶段，不要等同于完整清单中的全部 `must` 项。
-- `hospital_questions` 是医院确认问题摘要，来源于固定问题库和用户情况；同时可以同步写入 `hospital_context.items_to_confirm_with_hospital` 保持兼容。每条必须写成“物品/规则：一句话解释”，不要写成一个没有对象的长问题。
+- `focus_items` 是兼容摘要字段，来源于固定规则和用户阶段，不要等同于完整清单中的全部 `must` 项，也不要依赖它作为默认展示模块。
+- `hospital_questions` 是兼容摘要字段，来源于固定问题库和用户情况；同时可以同步写入 `hospital_context.items_to_confirm_with_hospital` 保持兼容。每条必须写成“物品/规则：一句话解释”，不要写成一个没有对象的长问题，也不要依赖它作为默认展示模块。
 - `missing_or_to_buy` 是兼容字段，不参与默认卡片主展示；除非用户明确要购买缺口或购物清单，否则保持空数组；明确需要时最多输出 5 条。
 - `hospital_context.items_to_confirm_with_hospital` 必须是明确问题，不要是笼统提醒。推荐格式：`物品/规则：一句话解释。`
 
@@ -310,20 +342,19 @@ priority 取值：
 2. 再根据用户情况裁剪：
    - 计划分娩方式：刨腹产减少顺产待产过程舒适物，增加“住院时长、方便拿取、宽松出院衣物”等提示。
    - 喂养意向：母乳/混合保留哺乳用品和吸奶器；配方喂养减少哺乳用品，把奶瓶/配方奶放入医院确认项。
-   - 待产清单风格：极简减少可选项；完整增加备用项；预算优先突出可先和医院确认、可后买。
    - 预计住院时长：调整消耗品数量，例如产褥垫、一次性内裤、宝宝纸尿裤。
    - 医院已提供物品：主清单中降级或不再重复列为必带；不要为了填充字段生成购买缺口。
    - 是否第一胎：第一胎增加医院确认问题和支持人提示。
 3. 最后输出：
-   - 必带物品：写入 `focus_items`，同时在完整清单中保留对应条目。
-   - 先和医院确认：写入 `hospital_questions`，必要时同步到 `hospital_context.items_to_confirm_with_hospital`。
+   - 物品清单：写入 `packing_groups`，按场景分组呈现。
+   - 和医院确认的物品：在 `packing_groups` 中标记 `priority: "confirm_first"`，必要时同步到 `hospital_questions` 或 `hospital_context.items_to_confirm_with_hospital` 保持兼容。
    - 个性化理由：写入 `personalized_notes`。
 
-## 必带物品固定规则
+## `focus_items` 兼容摘要规则
 
 `focus_items` 应该相对稳定，不要每次临时发挥。先从以下固定基线挑选，再按用户情况裁剪到 5-7 条：
 
-1. 37 周以后或用户说“快生了”：优先展示“马上拿走”物品。
+1. 37 周以后或用户说“快生了”：优先保留“马上拿走”物品。
    - 身份证、医保卡、产检资料
    - 手机和充电线
    - 产褥垫/产妇卫生巾
@@ -331,20 +362,20 @@ priority 取值：
    - 妈妈宽松出院衣物
    - 宝宝出院衣物和包被
    - 吸管杯
-2. 32-36 周：优先展示“要尽快买齐/打包”的物品。
+2. 32-36 周：优先保留“要尽快买齐/打包”的物品。
    - 证件资料
    - 产褥垫/产妇卫生巾
    - 一次性内裤
    - 宝宝出院衣物和包被
    - 手机充电线
    - 哺乳用品基础项（仅母乳/混合喂养）
-3. 刨腹产：必带物品中更优先放宽松出院衣物、方便拿取的洗漱用品、长充电线；不要突出顺产待产过程舒适物。
-4. 配方喂养：不要把吸奶器、乳盾、初乳收集器放入必带物品。
+3. 刨腹产：关键摘要中更优先放宽松出院衣物、方便拿取的洗漱用品、长充电线；不要突出顺产待产过程舒适物。
+4. 配方喂养：不要把吸奶器、乳盾、初乳收集器放入关键摘要。
 5. 医院已明确提供的物品，不要放入 `focus_items`。
 
 `focus_items` 可以是字符串数组，也可以是对象数组；为了移动端稳定，优先使用短字符串。
 
-## 医院确认问题固定库
+## 医院确认兼容问题库
 
 `hospital_questions` 必须来自以下固定问题库，再按用户情况裁剪排序。不要输出笼统的“按医院要求确认”，也不要写成没有对象的长句。每条使用“物品/规则：一句话解释”。
 
@@ -369,7 +400,7 @@ priority 取值：
 
 ## 参考清单内容
 
-以下是生成 `packing_groups` 时的内容基线。要根据用户的孕周、分娩方式、住院时长、喂养意向、医院提供物品和待产清单风格裁剪，不要每次机械全量输出。
+以下是生成 `packing_groups` 时的内容基线。要根据用户的孕周、分娩方式、住院时长、喂养意向、医院提供物品、是否第一胎和临近程度裁剪，不要每次机械全量输出。
 
 1. 证件资料
    - 夫妻双方身份证：`must`，`copy_requirement`: `原件+复印件`
@@ -434,10 +465,9 @@ priority 取值：
 
 ## 个性化规则
 
-- 极简：证件、通讯、妈妈产后基础护理、宝宝出院基础物品；减少舒适和备用项。
-- 标准：覆盖常见住院需求，并加入哺乳用品、宝宝用品和陪产包。
-- 完整：增加备用物品、舒适偏好、额外衣物、陪产人和宝宝护理补充。
-- 预算优先：优先关键必需品，标注舒适备用项和可先和医院确认的物品，避免和医院提供物品重复。
+- 临近入院或用户说“马上要生/快生了”：优先证件、通讯、妈妈产后基础护理、宝宝出院基础物品和医院确认项；减少舒适备用项。
+- 孕周较早且用户有时间准备：覆盖常见住院需求，并加入哺乳用品、宝宝用品、陪产包和需要提前向医院确认的项目。
+- 用户提到已有物品、医院可能提供物品或担心重复准备时：优先把相关内容放入医院确认项，避免重复列为必带。
 - 第一胎：加入更多医院确认问题、数量提示和支持人角色提示。
 - 非第一胎：询问或参考上次缺什么/什么没用上，并据此调整。
 - 母乳或混合喂养：保留哺乳用品和吸奶器；吸奶器用 `recommended`，不要表达成必须购买。
@@ -458,15 +488,15 @@ priority 取值：
   - `timeline`：按计划日期倒推准备节奏。
 - 不提供手术指导，不替代医生说明。
 
-## 商品链接规则
+## 购物车链接规则
 
-- 如果推荐的 `card_json` 物品中包含吸奶器，在 `ui_card_create` 外部的普通回复文本中附带购买链接。
-- 生成待产包卡片后，只要 `ui_card_create` 的工具结果里包含 `assistant_followup`，最终普通回复必须包含其中的资源提示；可以按用户语言轻微改写，但必须保留短链接 `[sea.momcozy.com](https://sea.momcozy.com/collections/weekly-deals/products/momcozy-mobile-style-hands-free-breast-pump?variant=46306441625789)`。
-- 不要把购买链接写入 `card_json`。
-- 链接固定为：https://sea.momcozy.com/collections/weekly-deals/products/momcozy-mobile-style-hands-free-breast-pump?variant=46306441625789
-- 普通回复文本中不要裸露完整长链接，使用 Markdown 短链接格式：`[sea.momcozy.com](https://sea.momcozy.com/collections/weekly-deals/products/momcozy-mobile-style-hands-free-breast-pump?variant=46306441625789)`。
-- 推荐语气必须弱化推销意味：只作为“如果你还没有准备、可以先了解/作为可选备用”的资源提示，不要暗示用户必须购买，也不要制造焦虑。
-- 如果用户明确表示不打算母乳、医院已提供完整泌乳支持或不想看商品推荐，可以不附购买链接。
+- 生成待产包卡片后，只要 `ui_card_create` 的工具结果里包含 `assistant_followup`，最终普通回复必须包含其中的购物车资源提示。
+- 不要把购物车链接写入 `card_json`；链接只出现在 `ui_card_create` 外部的普通回复文本中。
+- 链接固定为：`/hospital-bag-cart`。
+- 普通回复文本中使用显眼的 Markdown 短链接格式：`**[打开待产包一键打包下单页](/hospital-bag-cart)**`。
+- 购物车只打包适合直接购买的妈妈和宝宝母婴用品，例如产褥垫、一次性内裤、宝宝纸尿裤、湿巾、棉柔巾、包被、防溢乳垫、储奶袋、吸奶器等。
+- 证件资料、医院规则、医院确认项、药物、医疗处置相关内容不要打包为商品。
+- 推荐语气必须弱化推销意味：强调“可以先打开购物车核对和删减”，不要暗示用户必须购买，也不要制造焦虑。
 
 ## 安全与政策边界
 
