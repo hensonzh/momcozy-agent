@@ -797,18 +797,33 @@ def _build_request_context_for_request(
     options: BuildAgentRequestOptions,
 ) -> str:
     context_state = options.get("context_state")
+    loaded_skill_ids = options.get("loaded_skill_ids")
+    if not isinstance(loaded_skill_ids, list):
+        loaded_skill_ids = None
     if isinstance(context_state, ContextState):
-        return build_request_context(inputs, context_state)
-    return build_request_context(inputs)
+        return build_request_context(inputs, context_state, loaded_skill_ids)
+    return build_request_context(inputs, None, loaded_skill_ids)
 
 
 def _record_loaded_reference(context_state: object, tool_name: str, result: dict[str, Any]) -> None:
     if not isinstance(context_state, ContextState):
         return
-    if tool_name != "device_manual_search" or not result.get("ok"):
+    if not result.get("ok"):
         return
     tool_result = result.get("result")
     if not isinstance(tool_result, dict):
+        return
+    if tool_name == "read_skill_file":
+        skill_id = str(tool_result.get("skill_id") or "").strip()
+        kind = str(tool_result.get("kind") or "").strip()
+        path = str(tool_result.get("path") or "").strip()
+        if skill_id and kind and path:
+            _append_loaded_reference(
+                context_state,
+                f"{skill_id}/{path} 已在当前会话中读取过；连续同一子服务任务优先复用，不要重复调用 read_skill_file，除非用户切换到新 reference 或上下文不足。",
+            )
+        return
+    if tool_name != "device_manual_search":
         return
     if tool_result.get("status") not in {"manual_loaded", "manual_loaded_with_faq"}:
         return
@@ -818,8 +833,13 @@ def _record_loaded_reference(context_state: object, tool_name: str, result: dict
         return
     source = str(manual.get("source") or "references/air1/manual.md")
     reference = f"device-guidance/{model}/{source} 已在当前会话中加载过；后续同型号连续任务可复用，除非上下文不足或用户提出新的资料需求。"
+    _append_loaded_reference(context_state, reference)
+
+
+def _append_loaded_reference(context_state: ContextState, reference: str) -> None:
     if reference not in context_state.loaded_references:
         context_state.loaded_references.append(reference)
+    context_state.loaded_references = context_state.loaded_references[-12:]
 
 
 def _tool_inputs_for_call(inputs: RuntimeInputs, options: BuildAgentRequestOptions) -> RuntimeInputs:

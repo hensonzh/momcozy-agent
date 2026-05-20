@@ -202,6 +202,58 @@ button:disabled {
   color: #4b5563;
 }
 
+.message.assistant table {
+  min-width: 720px;
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  color: #3f2732;
+  font-size: 13px;
+  line-height: 1.55;
+  text-align: left;
+  background: #fff8fa;
+  border: 1px solid #ead6dc;
+  border-radius: 12px;
+  box-shadow: 0 8px 20px rgba(137, 72, 98, 0.06);
+  overflow: hidden;
+}
+
+.message.assistant table:not(:first-child) {
+  margin-top: 10px;
+}
+
+.message.assistant table:not(:last-child) {
+  margin-bottom: 10px;
+}
+
+.message.assistant thead th {
+  border-bottom: 1px solid #e5cfd6;
+  background: #fff0f4;
+  color: #4a2635;
+  font-weight: 750;
+}
+
+.message.assistant th,
+.message.assistant td {
+  padding: 10px 12px;
+  vertical-align: top;
+}
+
+.message.assistant td {
+  border-top: 1px solid #efdde3;
+  background: #fff8fa;
+}
+
+.message.assistant tbody td:first-child {
+  background: #fff0f4;
+}
+
+.message.assistant.has-markdown-table {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 .message.assistant img,
 .work-narration-content img {
   display: block;
@@ -446,11 +498,8 @@ body.image-viewer-open {
 }
 
 .thinking-note {
-  width: 88%;
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 8px;
-  align-items: center;
+  width: fit-content;
+  max-width: 88%;
   color: #687384;
   font-size: 12px;
   font-weight: 650;
@@ -471,11 +520,7 @@ body.image-viewer-open {
 }
 
 .thinking-marker {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: #9aa8b5;
-  animation: pulse 1s ease-in-out infinite;
+  display: none;
 }
 
 .work-item.completed .work-marker {
@@ -607,6 +652,31 @@ body.image-viewer-open {
   background: #fffefe;
 }
 
+.agent-form-section-tone-1 {
+  border-color: #efd6de;
+  background: #fff6f8;
+}
+
+.agent-form-section-tone-2 {
+  border-color: #d8e8de;
+  background: #f4fbf6;
+}
+
+.agent-form-section-tone-3 {
+  border-color: #d7e2f3;
+  background: #f3f8ff;
+}
+
+.agent-form-section-tone-4 {
+  border-color: #eadcc8;
+  background: #fff8ee;
+}
+
+.agent-form-section-tone-5 {
+  border-color: #d8e6ee;
+  background: #f3faff;
+}
+
 .agent-form-section-header {
   display: flex;
   align-items: center;
@@ -622,6 +692,26 @@ body.image-viewer-open {
   font-size: 14px;
   font-weight: 750;
   line-height: 1.3;
+}
+
+.agent-form-section-tone-1 h3 {
+  color: #743149;
+}
+
+.agent-form-section-tone-2 h3 {
+  color: #27634d;
+}
+
+.agent-form-section-tone-3 h3 {
+  color: #2c5c92;
+}
+
+.agent-form-section-tone-4 h3 {
+  color: #7a5425;
+}
+
+.agent-form-section-tone-5 h3 {
+  color: #2b6077;
 }
 
 .agent-form-section-fields {
@@ -881,7 +971,7 @@ body.image-viewer-open {
 
 .agent-card-birth_plan_card .agent-card-header {
   position: relative;
-  min-height: 86px;
+  min-height: 64px;
   padding: 12px 12px 15px;
   border: 1px solid #cfe1dc;
   border-radius: 8px;
@@ -920,21 +1010,8 @@ body.image-viewer-open {
 }
 
 .agent-card-birth_plan_card .agent-card-header-text {
-  gap: 5px;
-}
-
-.agent-card-birth_plan_card .agent-card-header-text::before {
-  content: "Care team communication";
-  width: fit-content;
-  padding: 3px 8px;
-  border: 1px solid #cfe0dc;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.78);
-  color: #2b6f6a;
-  font-size: 10px;
-  font-weight: 760;
-  line-height: 1.2;
-  text-transform: uppercase;
+  gap: 0;
+  padding-top: 8px;
 }
 
 .agent-card-header h2 {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
+from momcozy_agent import ContextState, build_agent_request
 from momcozy_agent.agents import (
     run_agent_loop,
     tool_call_args_event,
@@ -98,6 +99,52 @@ class AgentToolEventTests(unittest.TestCase):
         self.assertEqual(artifact["artifact_type"], "support_ticket")
         confirmation = next(event for event in events if event.get("type") == "CONFIRMATION_REQUIRED")
         self.assertEqual(confirmation["title"], "请确认售后工单")
+
+    def test_read_skill_file_records_loaded_reference_context(self) -> None:
+        context_state = ContextState()
+        client = _FakeClient(
+            [
+                {
+                    "id": "resp-tool",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "id": "item-1",
+                            "call_id": "call-1",
+                            "name": "read_skill_file",
+                            "arguments": json.dumps(
+                                {
+                                    "skill_id": "birth-prep",
+                                    "kind": "references",
+                                    "path": "references/birth-plan-card.md",
+                                }
+                            ),
+                        }
+                    ],
+                },
+                {"id": "resp-final", "output": []},
+            ]
+        )
+
+        run_agent_loop(
+            client,
+            {"user_message": "帮我做分娩沟通卡", "locale": "zh-CN"},
+            {"context_state": context_state, "loaded_skill_ids": ["birth-prep"]},
+            ag_ui_thread_id="thread-1",
+            ag_ui_run_id="run-1",
+        )
+
+        self.assertTrue(any("birth-prep/references/birth-plan-card.md 已在当前会话中读取过" in item for item in context_state.loaded_references))
+
+        request = build_agent_request(
+            {"user_message": "继续", "locale": "zh-CN", "previous_response_id": "resp-final"},
+            {"context_state": context_state, "loaded_skill_ids": ["birth-prep"]},
+        )
+        request_context = request["input"][0]["content"][0]["text"]
+        self.assertIn("loaded_skill_context:", request_context)
+        self.assertIn("loaded_reference_context:", request_context)
+        self.assertIn("不要重复调用 load_skill", request_context)
+        self.assertIn("不要重复调用 read_skill_file", request_context)
 
 
 class _FakeClient:

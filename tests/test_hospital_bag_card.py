@@ -27,6 +27,7 @@ class HospitalBagCardTests(unittest.TestCase):
         self.assertEqual(pump["quantity"], "1台")
         self.assertEqual(pump["priority"], "recommended")
         self.assertIn("assistant_followup", result)
+        self.assertIn("你的待产包已经生成好了哦", result["assistant_followup"]["message"])
         self.assertIn("/hospital-bag-cart", result["assistant_followup"]["message"])
 
     def test_formula_feeding_does_not_add_breast_pump(self) -> None:
@@ -68,8 +69,8 @@ class HospitalBagCardTests(unittest.TestCase):
         )
 
         groups = result["card"]["card_json"]["packing_groups"]
-        postpartum = next(group for group in groups if group["group_id"] == "postpartum")
-        self.assertEqual(postpartum["title"], "妈妈产后护理与哺乳用品")
+        postpartum = next(group for group in groups if group["group_id"] == "postpartum_home_first_week")
+        self.assertEqual(postpartum["title"], "产后回家第一周用品")
         self.assertTrue(any("吸奶器" in item["label"] for item in postpartum["items"]))
 
 

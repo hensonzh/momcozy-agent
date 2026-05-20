@@ -15,7 +15,11 @@ class ContextState:
     client_events: list[str] = field(default_factory=list)
 
 
-def build_request_context(inputs: RuntimeInputs, state: ContextState | None = None) -> str:
+def build_request_context(
+    inputs: RuntimeInputs,
+    state: ContextState | None = None,
+    loaded_skill_ids: list[str] | None = None,
+) -> str:
     include_environment = state is None or not state.environment_sent
     lines = ["request_context:"]
 
@@ -26,6 +30,12 @@ def build_request_context(inputs: RuntimeInputs, state: ContextState | None = No
             state.environment_sent = True
 
     lines.append(f"message_sent_at: {_message_sent_at(inputs)}")
+    if loaded_skill_ids:
+        lines.append("loaded_skill_context:")
+        for skill_id in _unique_strings(loaded_skill_ids):
+            lines.append(
+                f"- {skill_id}/SKILL.md 已在当前会话中读取过；连续同一服务任务优先复用，不要重复调用 load_skill，除非用户切换服务或需要新的未读资料。"
+            )
     if state is not None and state.loaded_references:
         lines.append("loaded_reference_context:")
         for reference in state.loaded_references:
@@ -40,3 +50,12 @@ def build_request_context(inputs: RuntimeInputs, state: ContextState | None = No
 def _message_sent_at(inputs: RuntimeInputs) -> str:
     value = inputs.get("message_sent_at") or inputs.get("current_date") or ""
     return str(value)
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    unique: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if text and text not in unique:
+            unique.append(text)
+    return unique

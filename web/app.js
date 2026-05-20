@@ -19,6 +19,8 @@ const IMAGE_VIEWER_MAX_ZOOM = 3;
 const IMAGE_VIEWER_ZOOM_STEP = 0.25;
 const IBCLC_CONSULT_COMPLETED_KEY = "momcozy_ibclc_consult_completed";
 const MOMCOZY_LOGO_SRC = "/momcozy_logo.png";
+const NEW_CONVERSATION_GREETING =
+  "你好呀，我在。\n\n这次想先聊哪件事？你可以直接说现在最困扰你的情况，不管是孕期准备、产后恢复、喂养奶量，还是设备使用，我都会陪你一步步理清楚。";
 const DOWNLOAD_ICON_SVG = `
   <svg viewBox="0 0 24 24" aria-hidden="true">
     <path d="M12 3v11" />
@@ -58,6 +60,10 @@ function addMessage(role, text, options = {}) {
   row.appendChild(node);
   messages.scrollTop = messages.scrollHeight;
   return node;
+}
+
+function addNewConversationGreeting() {
+  addMessage("assistant", NEW_CONVERSATION_GREETING);
 }
 
 function appendMessageImages(node, images) {
@@ -105,6 +111,8 @@ function renderAssistantMarkdown(node) {
   });
   const markdownImages = node.querySelectorAll("img");
   node.classList.toggle("has-markdown-image", markdownImages.length > 0);
+  const markdownTables = node.querySelectorAll("table");
+  node.classList.toggle("has-markdown-table", markdownTables.length > 0);
   markdownImages.forEach((img) => {
     img.decoding = "async";
     enableImageViewer(img);
@@ -296,10 +304,7 @@ function showThinking(run, options = {}) {
   row.className = "message-row thinking";
   const node = document.createElement("div");
   node.className = "thinking-note";
-  node.innerHTML = `
-    <span class="thinking-marker" aria-hidden="true"></span>
-    <span class="thinking-title">${options.title || "正在思考"}</span>
-  `;
+  node.innerHTML = `<span class="thinking-title">${options.title || "正在思考"}</span>`;
   row.appendChild(node);
   const panelRow = panel?.closest(".message-row");
   if (panelRow) {
@@ -656,15 +661,16 @@ function addFormCard(formSpec) {
     node.appendChild(description);
   }
 
-  for (const group of groupFormFields(normalizedFormSpec.fields || [])) {
+  const fieldGroups = groupFormFields(normalizedFormSpec.fields || []);
+  fieldGroups.forEach((group, groupIndex) => {
     if (group.title) {
-      node.appendChild(createFormSection(group));
-      continue;
+      node.appendChild(createFormSection(group, normalizedFormSpec.id, groupIndex));
+      return;
     }
     for (const field of group.fields) {
       node.appendChild(createFormField(field));
     }
-  }
+  });
 
   const actions = document.createElement("div");
   actions.className = "agent-form-actions";
@@ -1076,16 +1082,18 @@ function triggerImageDownload(dataUrl, filename) {
 
 function renderBirthPlanCardV1(node, cardJson) {
   const card = normalizeBirthPlanCard(cardJson);
-  addCardHeader(node, card.title || "Birth Plan Card", birthPlanSubtitle(card) || card.subtitle || "");
-  addBirthPlanPriorityBlock(node, card.top_priorities);
+  addCardHeader(node, card.title || "Birth Plan Card", "");
   addBirthPlanPreferenceGroups(node, [
-    ["Communication", card.communication],
-    ["Pain Relief", card.pain_relief],
-    ["Baby After Birth", card.baby_after_birth],
-    ["If Plans Change", card.if_plans_change],
+    ["沟通方式", card.communication],
+    ["生产过程", card.labor_preferences],
+    ["需要先沟通的操作", card.intervention_preferences],
+    ["疼痛缓解", card.pain_relief],
+    ["宝宝出生后", card.baby_after_birth],
+    ["计划变化时", card.if_plans_change],
+    ["来不及慢慢沟通时", card.emergency_authorization],
+    ["提前问医院", card.questions_for_hospital],
   ]);
-  addListSection(node, "Medical notes", card.medical_notes);
-  addListSection(node, "Questions before admission", limitList(card.questions_for_hospital, 3));
+  addListSection(node, "医疗或安全信息", card.medical_notes);
   addDisclaimer(node, card.disclaimer);
 }
 
@@ -1122,10 +1130,12 @@ function hospitalBagMetaValue(value) {
     mixed: "混合喂养",
     "混合": "混合喂养",
     vaginal: "顺产",
-    planned_c_section: "刨腹产",
-    c_section: "刨腹产",
-    "计划剖宫产": "刨腹产",
-    "剖腹产": "刨腹产",
+    planned_c_section: "剖宫产",
+    c_section: "剖宫产",
+    "计划剖宫产": "剖宫产",
+    "剖宫产": "剖宫产",
+    "剖腹产": "剖宫产",
+    "刨腹产": "剖宫产",
   };
   return labels[text.toLowerCase()] || value;
 }
@@ -1140,27 +1150,24 @@ function normalizeBirthPlanCard(cardJson) {
     overview: {
       due_date_or_week: overview.due_date_or_week || owner.due_date_or_week,
       birth_path: overview.birth_path || birthPreferences.birth_path,
+      birth_setting: overview.birth_setting || owner.birth_setting,
       support_people: overview.support_people || owner.support_people,
     },
     top_priorities: compactBirthPlanList(cardJson.top_priorities || cardJson.if_plans_change?.what_matters_most, 3),
     communication: compactBirthPlanList(cardJson.communication || cardJson.communication_preferences, 3),
+    labor_preferences: compactBirthPlanList(cardJson.labor_preferences, 3),
+    intervention_preferences: compactBirthPlanList(cardJson.intervention_preferences, 3),
     pain_relief: compactBirthPlanList(cardJson.pain_relief || cardJson.pain_relief_preferences, 3),
     baby_after_birth: compactBirthPlanList(cardJson.baby_after_birth || cardJson.baby_after_birth_preferences, 3),
     if_plans_change: compactBirthPlanList(cardJson.if_plans_change, 3),
+    emergency_authorization: compactBirthPlanList(cardJson.emergency_authorization, 3),
     questions_for_hospital: compactBirthPlanList(cardJson.questions_for_hospital, 3),
     medical_notes: compactBirthPlanList(cardJson.medical_notes, 3),
+    personalized_notes: compactBirthPlanList(cardJson.personalized_notes, 3),
     disclaimer:
       cardJson.disclaimer ||
       "This card is for communication only. Please follow your clinician and hospital guidance, especially if plans change for safety reasons.",
   };
-}
-
-function birthPlanSubtitle(card) {
-  const overview = card.overview || {};
-  const values = [overview.due_date_or_week, overview.birth_path, overview.support_people]
-    .filter((value) => hasDisplayValue(value) && !isConfirmPlaceholder(value))
-    .map(formatPlainValue);
-  return values.join(" | ");
 }
 
 function compactBirthPlanList(values, maxItems) {
@@ -1179,34 +1186,13 @@ function flattenDisplayValues(value) {
   return hasDisplayValue(value) ? [formatPlainValue(value)] : [];
 }
 
-function addBirthPlanPriorityBlock(node, priorities) {
-  const items = compactBirthPlanList(priorities, 3);
-  if (!items.length) return;
-
-  const section = document.createElement("section");
-  section.className = "birth-plan-priority";
-  const heading = document.createElement("h3");
-  heading.textContent = "What matters most";
-  section.appendChild(heading);
-
-  const list = document.createElement("ul");
-  list.className = "agent-card-list";
-  for (const item of items) {
-    const li = document.createElement("li");
-    li.textContent = item;
-    list.appendChild(li);
-  }
-  section.appendChild(list);
-  node.appendChild(section);
-}
-
 function addBirthPlanPreferenceGroups(node, groups) {
   const visibleGroups = groups
     .map(([title, values]) => [title, compactBirthPlanList(values, 3)])
     .filter(([, values]) => values.length);
   if (!visibleGroups.length) return;
 
-  const section = createCardSection("Care team preferences");
+  const section = createCardSection("沟通卡片内容");
   section.classList.add("birth-plan-preferences");
   const grid = document.createElement("div");
   grid.className = "birth-plan-group-grid";
@@ -1233,14 +1219,45 @@ function addBirthPlanPreferenceGroups(node, groups) {
 
 function compactPackingGroups(groups) {
   if (!Array.isArray(groups)) return [];
-  return groups
+  const merged = new Map();
+  groups
     .filter((group) => group && typeof group === "object")
-    .slice(0, 3)
-    .map((group) => ({
-      ...group,
-      items: compactPackingItems(group.items),
-    }))
-    .filter((group) => group.items.length);
+    .forEach((group, index) => {
+      const items = compactPackingItems(group.items);
+      if (!items.length) return;
+      const scene = hospitalBagSceneGroup(group, index);
+      const existing = merged.get(scene.id);
+      if (existing) {
+        existing.items.push(...items);
+        existing._order = Math.min(existing._order, scene.order);
+        return;
+      }
+      merged.set(scene.id, {
+        ...group,
+        group_id: scene.id,
+        title: scene.title,
+        items,
+        _order: scene.order,
+      });
+    });
+  return Array.from(merged.values())
+    .sort((a, b) => a._order - b._order)
+    .map(({ _order, ...group }) => group);
+}
+
+function hospitalBagSceneGroup(group, fallbackOrder) {
+  const text = `${group?.group_id || ""} ${group?.title || ""}`.toLowerCase();
+  if (/(documents|certificate|证件|资料|文件)/.test(text)) return { id: "documents", title: "证件文件包", order: 0 };
+  if (/(baby|宝宝|新生儿)/.test(text)) return { id: "baby_discharge_bag", title: "宝宝出院包", order: 2 };
+  if (/(support|partner|companion|陪产|支持人)/.test(text)) return { id: "support_person_bag", title: "陪产人包", order: 3 };
+  if (/(car|travel|traffic|transport|车上|交通|停车|路线)/.test(text)) return { id: "car_backup_bag", title: "车上备用包", order: 4 };
+  if (/(lactation|breastfeeding|feeding|postpartum|哺乳|喂养|产后回家|产后护理)/.test(text)) {
+    return { id: "postpartum_home_first_week", title: "产后回家第一周用品", order: 5 };
+  }
+  if (/(mom|mother|communication|food|妈妈|衣物|清洁|护理|通讯|饮食|住院)/.test(text)) {
+    return { id: "mom_hospital_bag", title: "妈妈住院包", order: 1 };
+  }
+  return { id: group?.group_id || `custom_${fallbackOrder}`, title: group?.title || formatLabel(group?.group_id || "Group"), order: 20 + fallbackOrder };
 }
 
 function compactPackingItems(items) {
@@ -1449,11 +1466,33 @@ function createFormField(field) {
 
 function normalizeFormSpec(formSpec) {
   const removedHospitalBagFieldIds = new Set(["hospital_rules_or_notes", "existing_checklist_or_photo_note"]);
-  if (formSpec?.id !== "hospital_bag_intake") return formSpec;
+  const exclusiveBirthPlanMultiSelectOptions = new Set([
+    "我还没想好，请帮我整理成温和版本",
+    "不需要持续解释，必要时再说就好",
+    "无特别偏好，听医生安排",
+    "听医生判断即可",
+    "灌肠/剃毛：希望按医院常规即可",
+    "暂未决定，听医生建议",
+    "未确定",
+    "还没确定",
+    "还没想好",
+  ]);
+  if (!["hospital_bag_intake", "birth_plan_card_intake"].includes(formSpec?.id)) return formSpec;
   return {
     ...formSpec,
     description: "",
-    fields: (formSpec.fields || []).filter((field) => !removedHospitalBagFieldIds.has(field?.id)),
+    fields: (formSpec.fields || [])
+      .filter((field) => !removedHospitalBagFieldIds.has(field?.id))
+      .map((field) => {
+        const { help_text, ...rest } = field || {};
+        if (formSpec.id === "birth_plan_card_intake" && rest.type === "multi_select" && Array.isArray(rest.options)) {
+          return {
+            ...rest,
+            options: rest.options.filter((option) => !exclusiveBirthPlanMultiSelectOptions.has(String(option))),
+          };
+        }
+        return rest;
+      }),
   };
 }
 
@@ -1488,9 +1527,15 @@ function splitFormFieldLabel(label) {
   return { groupTitle, fieldLabel };
 }
 
-function createFormSection(group) {
+function createFormSection(group, formId = "", groupIndex = 0) {
   const section = document.createElement("section");
-  section.className = "agent-form-section";
+  const toneClass =
+    formId === "hospital_bag_intake"
+      ? hospitalBagSectionToneClass(group.title, groupIndex)
+      : formId === "birth_plan_card_intake"
+        ? birthPlanSectionToneClass(group.title, groupIndex)
+        : "";
+  section.className = ["agent-form-section", toneClass].filter(Boolean).join(" ");
 
   const header = document.createElement("div");
   header.className = "agent-form-section-header";
@@ -1507,6 +1552,36 @@ function createFormSection(group) {
   section.appendChild(fields);
 
   return section;
+}
+
+function hospitalBagSectionToneClass(groupTitle, groupIndex) {
+  const titleIndexMap = {
+    基本信息: 0,
+    生产信息: 1,
+    医院信息: 2,
+    偏好信息: 3,
+  };
+  const styleIndex = titleIndexMap[groupTitle] ?? groupIndex;
+  return `agent-form-section-tone-${(styleIndex % 4) + 1}`;
+}
+
+function birthPlanSectionToneClass(groupTitle, groupIndex) {
+  const titleIndexMap = {
+    基本信息: 0,
+    支持与沟通: 1,
+    生产过程: 2,
+    疼痛和舒适: 3,
+    宝宝出生后: 4,
+    临时变化: 5,
+    提前问医院: 6,
+    产程偏好: 2,
+    助产干预: 2,
+    舒适与镇痛: 3,
+    计划变化与紧急情况: 5,
+    医院确认与安全: 6,
+  };
+  const styleIndex = titleIndexMap[groupTitle] ?? groupIndex;
+  return `agent-form-section-tone-${(styleIndex % 5) + 1}`;
 }
 
 function createCheckboxGroup(field) {
@@ -1607,7 +1682,7 @@ function hasDisplayValue(value) {
 }
 
 function isConfirmPlaceholder(value) {
-  return String(value || "").trim().toLowerCase() === "to confirm";
+  return ["to confirm", "待确认", "未确定", "不确定", "还没确定", "还没想好"].includes(String(value || "").trim().toLowerCase());
 }
 
 function normalizeList(values) {
@@ -2245,6 +2320,7 @@ reset.addEventListener("click", () => {
   localStorage.removeItem(IBCLC_CONSULT_COMPLETED_KEY);
   messages.innerHTML = "";
   clearPendingImages();
+  addNewConversationGreeting();
   updateMeta();
   input.focus();
 });
@@ -2297,7 +2373,4 @@ document.addEventListener("visibilitychange", () => {
 });
 
 updateMeta();
-addMessage(
-  "assistant",
-  "你好，我是 CoMate，懂妈妈的孕育与哺乳伙伴。\n\n我可以陪你做产前准备，比如分娩计划、待产包和入院准备；也可以支持产后泌乳指导、吸奶/亲喂计划、奶量管理、IBCLC 在线咨询，以及 Momcozy 设备使用指导。"
-);
+addNewConversationGreeting();
